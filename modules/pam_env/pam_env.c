@@ -699,7 +699,7 @@ static const char * _pam_get_item_byname(pam_handle_t *pamh, const char *name)
 
   if (itemval && (strcmp(name, "HOME") == 0 || strcmp(name, "SHELL") == 0)) {
     struct passwd *user_entry;
-    user_entry = pam_modutil_getpwnam (pamh, (char *) itemval);
+    user_entry = pam_modutil_getpwnam (pamh, itemval);
     if (!user_entry) {
       pam_syslog(pamh, LOG_ERR, "No such user!?");
       return NULL;
