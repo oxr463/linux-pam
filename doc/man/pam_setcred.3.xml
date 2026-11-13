@@ -1,16 +1,14 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
-                   "http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd">
+<refentry xmlns="http://docbook.org/ns/docbook" version="5.0" xml:id="pam_setcred">
 
-<refentry id="pam_setcred">
-
+  <info><date>%PAM_RELEASE_DATE%</date></info>
   <refmeta>
     <refentrytitle>pam_setcred</refentrytitle>
     <manvolnum>3</manvolnum>
-    <refmiscinfo class='setdesc'>Linux-PAM Manual</refmiscinfo>
+    <refmiscinfo class="source">Linux-PAM %PAM_VERSION%</refmiscinfo>
+    <refmiscinfo class="manual">Linux-PAM Manual</refmiscinfo>
   </refmeta>
 
-  <refnamediv id="pam_setcred-name">
+  <refnamediv xml:id="pam_setcred-name">
     <refname>pam_setcred</refname>
     <refpurpose>
        establish / delete user credentials
@@ -19,7 +17,7 @@
 
   <!-- body begins here -->
   <refsynopsisdiv>
-    <funcsynopsis id='pam_setcred-synopsis'>
+    <funcsynopsis xml:id="pam_setcred-synopsis">
       <funcsynopsisinfo>#include &lt;security/pam_appl.h&gt;</funcsynopsisinfo>
       <funcprototype>
         <funcdef>int <function>pam_setcred</function></funcdef>
@@ -30,7 +28,7 @@
   </refsynopsisdiv>
 
 
-  <refsect1 id='pam_setcred-description'>
+  <refsect1 xml:id="pam_setcred-description">
     <title>DESCRIPTION</title>
     <para>
       The <function>pam_setcred</function> function is used to establish,
@@ -58,7 +56,7 @@
        Such credentials should be established, by the application, prior
        to a call to this function.  For example,
        <citerefentry>
-         <refentrytitle>initgroups</refentrytitle><manvolnum>2</manvolnum>
+         <refentrytitle>initgroups</refentrytitle><manvolnum>3</manvolnum>
        </citerefentry> (or equivalent) should have been performed.
       </para>
 
@@ -95,7 +93,7 @@
       </variablelist>
    </refsect1>
 
-   <refsect1 id='pam_setcred-return_values'>
+   <refsect1 xml:id="pam_setcred-return_values">
      <title>RETURN VALUES</title>
     <variablelist>
       <varlistentry>
@@ -134,7 +132,7 @@
         <term>PAM_SUCCESS</term>
         <listitem>
            <para>
-             Data was successful stored.
+             Data was successfully stored.
           </para>
         </listitem>
       </varlistentry>
@@ -160,7 +158,7 @@
     </variablelist>
   </refsect1>
 
-  <refsect1 id="pam_set_data-see_also">
+  <refsect1 xml:id="pam_set_data-see_also">
     <title>SEE ALSO</title>
     <para>
       <citerefentry>

@@ -30,7 +30,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#if !(defined(linux))
+#ifndef __linux__
 #error THIS CODE IS KNOWN TO WORK ONLY ON LINUX !!!
 #endif
 
@@ -44,21 +44,17 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <syslog.h>
-#include <dlfcn.h>
-#include <stdarg.h>
 #include <pwd.h>
 #include <grp.h>
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/resource.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
 #include <libgen.h>
 #include <fcntl.h>
 #include <sched.h>
 #include <glob.h>
-#include <locale.h>
 #include "security/pam_modules.h"
 #include "security/pam_modutil.h"
 #include "security/pam_ext.h"
@@ -90,14 +86,16 @@
 /*
  * Module defines
  */
-#ifndef SECURECONF_DIR
-#define SECURECONF_DIR "/etc/security/"
+#define PAM_NAMESPACE_CONFIG (SCONFIG_DIR "/namespace.conf")
+#define NAMESPACE_INIT_SCRIPT (SCONFIG_DIR "/namespace.init")
+#define NAMESPACE_D_DIR (SCONFIG_DIR "/namespace.d/")
+#define NAMESPACE_D_GLOB (SCONFIG_DIR "/namespace.d/*.conf")
+#ifdef VENDOR_SCONFIG_DIR
+#define VENDOR_NAMESPACE_INIT_SCRIPT (VENDOR_SCONFIG_DIR "/namespace.init")
+#define VENDOR_PAM_NAMESPACE_CONFIG (VENDOR_SCONFIG_DIR "/namespace.conf")
+#define VENDOR_NAMESPACE_D_DIR (VENDOR_SCONFIG_DIR "/namespace.d/")
+#define VENDOR_NAMESPACE_D_GLOB (VENDOR_SCONFIG_DIR "/namespace.d/*.conf")
 #endif
-
-#define PAM_NAMESPACE_CONFIG (SECURECONF_DIR "namespace.conf")
-#define NAMESPACE_INIT_SCRIPT (SECURECONF_DIR "namespace.init")
-#define NAMESPACE_D_DIR (SECURECONF_DIR "namespace.d/")
-#define NAMESPACE_D_GLOB (SECURECONF_DIR "namespace.d/*.conf")
 
 /* module flags */
 #define PAMNS_DEBUG           0x00000100 /* Running in debug mode */
@@ -112,7 +110,7 @@
 #define PAMNS_MOUNT_PRIVATE   0x00080000 /* Make the polydir mounts private */
 
 /* polydir flags */
-#define POLYDIR_EXCLUSIVE     0x00000001 /* polyinstatiate exclusively for override uids */
+#define POLYDIR_EXCLUSIVE     0x00000001 /* polyinstantiate exclusively for override uids */
 #define POLYDIR_CREATE        0x00000002 /* create the polydir */
 #define POLYDIR_NOINIT        0x00000004 /* no init script */
 #define POLYDIR_SHARED        0x00000008 /* share context/level instances among users */
@@ -123,6 +121,13 @@
 #define NAMESPACE_MAX_DIR_LEN 80
 #define NAMESPACE_POLYDIR_DATA "pam_namespace:polydir_data"
 #define NAMESPACE_PROTECT_DATA "pam_namespace:protect_data"
+
+/*
+ * Operation mode for function secure_opendir()
+ */
+#define SECURE_OPENDIR_PROTECT     0x00000001
+#define SECURE_OPENDIR_MKDIR       0x00000002
+#define SECURE_OPENDIR_FULL_FD     0x00000004
 
 /*
  * Polyinstantiation method options, based on user, security context
@@ -161,6 +166,9 @@ struct polydir_s {
     char dir[PATH_MAX];    	       	/* directory to polyinstantiate */
     char rdir[PATH_MAX];    	       	/* directory to unmount (based on RUSER) */
     char instance_prefix[PATH_MAX];	/* prefix for instance dir path name */
+    char instance_absolute[PATH_MAX];	/* absolute path to the instance dir (instance_parent + instname) */
+    char instance_parent[PATH_MAX];	/* parent dir of the instance dir */
+    char *instname;			/* last segment of the path to the instance dir */
     enum polymethod method;		/* method used to polyinstantiate */
     unsigned int num_uids;		/* number of override uids */
     uid_t *uid;				/* list of override uids */

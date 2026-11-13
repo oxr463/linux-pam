@@ -38,7 +38,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
@@ -55,55 +54,15 @@
 #include <security/pam_ext.h>
 
 #include "pam_inline.h"
+#include "pam_i18n.h"
 #include "faillock.h"
+#include "faillock_config.h"
 
 #define FAILLOCK_ACTION_PREAUTH  0
 #define FAILLOCK_ACTION_AUTHSUCC 1
 #define FAILLOCK_ACTION_AUTHFAIL 2
 
-#define FAILLOCK_FLAG_DENY_ROOT		0x1
-#define FAILLOCK_FLAG_AUDIT		0x2
-#define FAILLOCK_FLAG_SILENT		0x4
-#define FAILLOCK_FLAG_NO_LOG_INFO	0x8
-#define FAILLOCK_FLAG_UNLOCKED		0x10
-#define FAILLOCK_FLAG_LOCAL_ONLY	0x20
-#define FAILLOCK_FLAG_NO_DELAY		0x40
-
-#define MAX_TIME_INTERVAL 604800 /* 7 days */
-#define FAILLOCK_CONF_MAX_LINELEN 1023
-
-static const char default_faillock_conf[] = FAILLOCK_DEFAULT_CONF;
-
-struct options {
-	unsigned int action;
-	unsigned int flags;
-	unsigned short deny;
-	unsigned int fail_interval;
-	unsigned int unlock_time;
-	unsigned int root_unlock_time;
-	char *dir;
-	const char *user;
-	char *admin_group;
-	int failures;
-	uint64_t latest_time;
-	uid_t uid;
-	int is_admin;
-	uint64_t now;
-	int fatal_error;
-};
-
-static int read_config_file(
-	pam_handle_t *pamh,
-	struct options *opts,
-	const char *cfgfile
-);
-
-static void set_conf_opt(
-	pam_handle_t *pamh,
-	struct options *opts,
-	const char *name,
-	const char *value
-);
+#define FAILLOCK_AUTH_EXECUTED   "pam_faillock:auth_executed"
 
 static int
 args_parse(pam_handle_t *pamh, int argc, const char **argv,
@@ -112,11 +71,10 @@ args_parse(pam_handle_t *pamh, int argc, const char **argv,
 	int i;
 	int config_arg_index = -1;
 	int rv;
-	const char *conf = default_faillock_conf;
+	const char *conf = NULL;
 
 	memset(opts, 0, sizeof(*opts));
 
-	opts->dir = strdup(FAILLOCK_DEFAULT_TALLYDIR);
 	opts->deny = 3;
 	opts->fail_interval = 900;
 	opts->unlock_time = 600;
@@ -151,21 +109,25 @@ args_parse(pam_handle_t *pamh, int argc, const char **argv,
 			opts->action = FAILLOCK_ACTION_AUTHSUCC;
 		}
 		else {
-			char buf[FAILLOCK_CONF_MAX_LINELEN + 1];
-			char *val;
+			char *name, *val;
 
-			strncpy(buf, argv[i], sizeof(buf) - 1);
-			buf[sizeof(buf) - 1] = '\0';
+			if ((name = strdup(argv[i])) == NULL) {
+				pam_syslog(pamh, LOG_CRIT,
+				    "Error allocating memory: %m");
+				return PAM_BUF_ERR;
+			}
 
-			val = strchr(buf, '=');
+			val = strchr(name, '=');
 			if (val != NULL) {
 				*val = '\0';
 				++val;
 			}
 			else {
-				val = buf + sizeof(buf) - 1;
+				val = name + strlen(name);
 			}
-			set_conf_opt(pamh, opts, buf, val);
+			set_conf_opt(pamh, opts, name, val);
+
+			free(name);
 		}
 	}
 
@@ -174,183 +136,9 @@ args_parse(pam_handle_t *pamh, int argc, const char **argv,
 	if (flags & PAM_SILENT)
 		opts->flags |= FAILLOCK_FLAG_SILENT;
 
-	if (opts->dir == NULL) {
-		pam_syslog(pamh, LOG_CRIT, "Error allocating memory: %m");
-		opts->fatal_error = 1;
-	}
-
 	if (opts->fatal_error)
 		return PAM_BUF_ERR;
 	return PAM_SUCCESS;
-}
-
-/* parse a single configuration file */
-static int
-read_config_file(pam_handle_t *pamh, struct options *opts, const char *cfgfile)
-{
-	FILE *f;
-	char linebuf[FAILLOCK_CONF_MAX_LINELEN+1];
-
-	f = fopen(cfgfile, "r");
-	if (f == NULL) {
-		/* ignore non-existent default config file */
-		if (errno == ENOENT && cfgfile == default_faillock_conf)
-			return PAM_SUCCESS;
-		return PAM_SERVICE_ERR;
-	}
-
-	while (fgets(linebuf, sizeof(linebuf), f) != NULL) {
-		size_t len;
-		char *ptr;
-		char *name;
-		int eq;
-
-		len = strlen(linebuf);
-		/* len cannot be 0 unless there is a bug in fgets */
-		if (len && linebuf[len - 1] != '\n' && !feof(f)) {
-			(void) fclose(f);
-			return PAM_SERVICE_ERR;
-		}
-
-		if ((ptr=strchr(linebuf, '#')) != NULL) {
-			*ptr = '\0';
-		} else {
-			ptr = linebuf + len;
-		}
-
-		/* drop terminating whitespace including the \n */
-		while (ptr > linebuf) {
-			if (!isspace(*(ptr-1))) {
-				*ptr = '\0';
-				break;
-			}
-			--ptr;
-		}
-
-		/* skip initial whitespace */
-		for (ptr = linebuf; isspace(*ptr); ptr++);
-		if (*ptr == '\0')
-			continue;
-
-		/* grab the key name */
-		eq = 0;
-		name = ptr;
-		while (*ptr != '\0') {
-			if (isspace(*ptr) || *ptr == '=') {
-				eq = *ptr == '=';
-				*ptr = '\0';
-				++ptr;
-				break;
-			}
-			++ptr;
-		}
-
-		/* grab the key value */
-		while (*ptr != '\0') {
-			if (*ptr != '=' || eq) {
-				if (!isspace(*ptr)) {
-					break;
-				}
-			} else {
-				eq = 1;
-			}
-			++ptr;
-		}
-
-		/* set the key:value pair on opts */
-		set_conf_opt(pamh, opts, name, ptr);
-	}
-
-	(void)fclose(f);
-	return PAM_SUCCESS;
-}
-
-static void
-set_conf_opt(pam_handle_t *pamh, struct options *opts, const char *name, const char *value)
-{
-	if (strcmp(name, "dir") == 0) {
-		if (value[0] != '/') {
-			pam_syslog(pamh, LOG_ERR,
-				"Tally directory is not absolute path (%s); keeping default", value);
-		} else {
-			free(opts->dir);
-			opts->dir = strdup(value);
-		}
-	}
-	else if (strcmp(name, "deny") == 0) {
-		if (sscanf(value, "%hu", &opts->deny) != 1) {
-			pam_syslog(pamh, LOG_ERR,
-				"Bad number supplied for deny argument");
-		}
-	}
-	else if (strcmp(name, "fail_interval") == 0) {
-		unsigned int temp;
-		if (sscanf(value, "%u", &temp) != 1 ||
-			temp > MAX_TIME_INTERVAL) {
-			pam_syslog(pamh, LOG_ERR,
-				"Bad number supplied for fail_interval argument");
-		} else {
-			opts->fail_interval = temp;
-		}
-	}
-	else if (strcmp(name, "unlock_time") == 0) {
-		unsigned int temp;
-
-		if (strcmp(value, "never") == 0) {
-			opts->unlock_time = 0;
-		}
-		else if (sscanf(value, "%u", &temp) != 1 ||
-			temp > MAX_TIME_INTERVAL) {
-			pam_syslog(pamh, LOG_ERR,
-				"Bad number supplied for unlock_time argument");
-		}
-		else {
-			opts->unlock_time = temp;
-		}
-	}
-	else if (strcmp(name, "root_unlock_time") == 0) {
-		unsigned int temp;
-
-		if (strcmp(value, "never") == 0) {
-			opts->root_unlock_time = 0;
-		}
-		else if (sscanf(value, "%u", &temp) != 1 ||
-			temp > MAX_TIME_INTERVAL) {
-			pam_syslog(pamh, LOG_ERR,
-				"Bad number supplied for root_unlock_time argument");
-		} else {
-			opts->root_unlock_time = temp;
-		}
-	}
-	else if (strcmp(name, "admin_group") == 0) {
-		free(opts->admin_group);
-		opts->admin_group = strdup(value);
-		if (opts->admin_group == NULL) {
-			opts->fatal_error = 1;
-			pam_syslog(pamh, LOG_CRIT, "Error allocating memory: %m");
-		}
-	}
-	else if (strcmp(name, "even_deny_root") == 0) {
-		opts->flags |= FAILLOCK_FLAG_DENY_ROOT;
-	}
-	else if (strcmp(name, "audit") == 0) {
-		opts->flags |= FAILLOCK_FLAG_AUDIT;
-	}
-	else if (strcmp(name, "silent") == 0) {
-		opts->flags |= FAILLOCK_FLAG_SILENT;
-	}
-	else if (strcmp(name, "no_log_info") == 0) {
-		opts->flags |= FAILLOCK_FLAG_NO_LOG_INFO;
-	}
-	else if (strcmp(name, "local_users_only") == 0) {
-		opts->flags |= FAILLOCK_FLAG_LOCAL_ONLY;
-	}
-	else if (strcmp(name, "nodelay") == 0) {
-		opts->flags |= FAILLOCK_FLAG_NO_DELAY;
-	}
-	else {
-		pam_syslog(pamh, LOG_ERR, "Unknown option: %s", name);
-	}
 }
 
 static int
@@ -406,10 +194,11 @@ check_tally(pam_handle_t *pamh, struct options *opts, struct tally_data *tallies
 	unsigned int i;
 	uint64_t latest_time;
 	int failures;
+	const char *dir = get_tally_dir(opts);
 
 	opts->now = time(NULL);
 
-	tfd = open_tally(opts->dir, opts->user, opts->uid, 0);
+	tfd = open_tally(dir, opts->user, opts->uid, 0);
 
 	*fd = tfd;
 
@@ -466,9 +255,12 @@ check_tally(pam_handle_t *pamh, struct options *opts, struct tally_data *tallies
 
 				(void)pam_get_item(pamh, PAM_TTY, &tty);
 				(void)pam_get_item(pamh, PAM_RHOST, &rhost);
-				snprintf(buf, sizeof(buf), "pam_faillock uid=%u ", opts->uid);
-				audit_log_user_message(audit_fd, AUDIT_RESP_ACCT_UNLOCK_TIMED, buf,
-					rhost, NULL, tty, 1);
+				pam_sprintf(buf, "op=pam_faillock suid=%u ", opts->uid);
+				if (audit_log_user_message(audit_fd, AUDIT_RESP_ACCT_UNLOCK_TIMED, buf,
+							   rhost, NULL, tty, 1) <= 0)
+					pam_syslog(pamh, LOG_ERR,
+						   "Error sending audit message: %m");
+				audit_close(audit_fd);
 			}
 #endif
 			opts->flags |= FAILLOCK_FLAG_UNLOCKED;
@@ -483,9 +275,10 @@ static void
 reset_tally(pam_handle_t *pamh, struct options *opts, int *fd)
 {
 	int rv;
+	const char *dir = get_tally_dir(opts);
 
 	if (*fd == -1) {
-		*fd = open_tally(opts->dir, opts->user, opts->uid, 1);
+		*fd = open_tally(dir, opts->user, opts->uid, 1);
 	}
 	else {
 		while ((rv=ftruncate(*fd, 0)) == -1 && errno == EINTR);
@@ -504,9 +297,25 @@ write_tally(pam_handle_t *pamh, struct options *opts, struct tally_data *tallies
 	unsigned int oldest;
 	uint64_t oldtime;
 	const void *source = NULL;
+	const char *dir = get_tally_dir(opts);
 
 	if (*fd == -1) {
-		*fd = open_tally(opts->dir, opts->user, opts->uid, 1);
+		*fd = open_tally(dir, opts->user, opts->uid, 1);
+		if (*fd != -1) {
+			/*
+			 * Re-read the tally now that we hold the lock:
+			 * a concurrent process may have written records
+			 * between our earlier failed open and this one.
+			 */
+			free(tallies->records);
+			memset(tallies, 0, sizeof(*tallies));
+			if (read_tally(*fd, tallies) != 0) {
+				pam_syslog(pamh, LOG_ERR,
+					   "Error reading the tally file for %s: %m",
+					   opts->user);
+				return PAM_SYSTEM_ERR;
+			}
+		}
 	}
 	if (*fd == -1) {
 		if (errno == EACCES) {
@@ -580,19 +389,25 @@ write_tally(pam_handle_t *pamh, struct options *opts, struct tally_data *tallies
 			errno == EAFNOSUPPORT))
 			return PAM_SYSTEM_ERR;
 
-		snprintf(buf, sizeof(buf), "pam_faillock uid=%u ", opts->uid);
-		audit_log_user_message(audit_fd, AUDIT_ANOM_LOGIN_FAILURES, buf,
-			NULL, NULL, NULL, 1);
+		pam_sprintf(buf, "op=pam_faillock suid=%u ", opts->uid);
+		if (audit_log_user_message(audit_fd, AUDIT_ANOM_LOGIN_FAILURES, buf,
+					   NULL, NULL, NULL, 1) <= 0)
+			pam_syslog(pamh, LOG_ERR,
+				   "Error sending audit message: %m");
 
 		if (!opts->is_admin || (opts->flags & FAILLOCK_FLAG_DENY_ROOT)) {
-			audit_log_user_message(audit_fd, AUDIT_RESP_ACCT_LOCK, buf,
-				NULL, NULL, NULL, 1);
+			if (audit_log_user_message(audit_fd, AUDIT_RESP_ACCT_LOCK, buf,
+						   NULL, NULL, NULL, 1) <= 0)
+				pam_syslog(pamh, LOG_ERR,
+					   "Error sending audit message: %m");
 		}
 		close(audit_fd);
 #endif
-		if (!(opts->flags & FAILLOCK_FLAG_NO_LOG_INFO)) {
-			pam_syslog(pamh, LOG_INFO, "Consecutive login failures for user %s account temporarily locked",
-				opts->user);
+		if (!(opts->flags & FAILLOCK_FLAG_NO_LOG_INFO) &&
+		    ((opts->flags & FAILLOCK_FLAG_DENY_ROOT) || (opts->uid != 0))) {
+			pam_syslog(pamh, LOG_INFO,
+				   "Consecutive login failures for user %s account temporarily locked",
+				   opts->user);
 		}
 	}
 
@@ -680,13 +495,25 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		goto err;
 	}
 
+	rv = pam_set_data(pamh, FAILLOCK_AUTH_EXECUTED, (void *)1, NULL);
+	if (rv != PAM_SUCCESS)
+		goto err;
+
 	if (!(opts.flags & FAILLOCK_FLAG_LOCAL_ONLY) ||
 		check_local_user (pamh, opts.user) != 0) {
 		switch (opts.action) {
 			case FAILLOCK_ACTION_PREAUTH:
 				rv = check_tally(pamh, &opts, &tallies, &fd);
-				if (rv == PAM_AUTH_ERR && !(opts.flags & FAILLOCK_FLAG_SILENT)) {
-					faillock_message(pamh, &opts);
+				if (rv == PAM_AUTH_ERR) {
+					if (!(opts.flags & FAILLOCK_FLAG_NO_LOG_INFO)) {
+						pam_syslog(pamh, LOG_INFO,
+							   "User %s is temporarily locked out due to"
+							   " %u consecutive failed login attempts",
+							   opts.user, (unsigned int) opts.failures);
+					}
+					if (!(opts.flags & FAILLOCK_FLAG_SILENT)) {
+						faillock_message(pamh, &opts);
+					}
 				}
 				break;
 
@@ -733,6 +560,7 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 	struct options opts;
 	int rv, fd = -1;
 	struct tally_data tallies;
+	const void *auth_flag;
 
 	memset(&tallies, 0, sizeof(tallies));
 
@@ -742,6 +570,12 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
 		goto err;
 
 	opts.action = FAILLOCK_ACTION_AUTHSUCC;
+
+	rv = pam_get_data(pamh, FAILLOCK_AUTH_EXECUTED, &auth_flag);
+	if (rv == PAM_NO_MODULE_DATA) {
+		rv = PAM_SUCCESS;
+		goto err;
+	}
 
 	if ((rv=get_pam_user(pamh, &opts)) != PAM_SUCCESS) {
 		goto err;

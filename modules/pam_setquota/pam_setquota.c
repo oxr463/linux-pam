@@ -8,6 +8,8 @@
    Copyright © 2016 Keller Fuchs <kellerfuchs@hashbang.sh>
 */
 
+#include "pam_inline.h"
+
 #include <sys/types.h>
 #include <sys/quota.h>
 #include <linux/quota.h>
@@ -22,13 +24,16 @@
 #include <security/_pam_macros.h>
 #include <security/pam_ext.h>
 #include <security/pam_modutil.h>
-#include "pam_inline.h"
 
 #ifndef PATH_LOGIN_DEFS
 # define PATH_LOGIN_DEFS "/etc/login.defs"
 #endif
 
 #define MAX_UID_VALUE 0xFFFFFFFFUL
+
+/* QCMD() shifts its signed argument into the sign bit of int, which is
+ * undefined behaviour; redo the shift in unsigned arithmetic. */
+#define PAM_QCMD(cmd, type) ((int) QCMD((unsigned int)(cmd), (type)))
 
 struct pam_params {
   uid_t start_uid;
@@ -201,6 +206,7 @@ pam_sm_open_session(pam_handle_t *pamh, int flags UNUSED,
    */
   if (val) {
     param.start_uid = str_to_uid(pamh, val, param.start_uid, PATH_LOGIN_DEFS":UID_MIN");
+    _pam_drop(val);
   }
 
   /* Parse parameter values
@@ -313,7 +319,7 @@ pam_sm_open_session(pam_handle_t *pamh, int flags UNUSED,
   }
 
   /* Get limits */
-  if (quotactl(QCMD(Q_GETQUOTA, USRQUOTA), mntdevice, pwd->pw_uid,
+  if (quotactl(PAM_QCMD(Q_GETQUOTA, USRQUOTA), mntdevice, pwd->pw_uid,
                (void *)&ndqblk) == -1) {
     pam_syslog(pamh, LOG_ERR, "fail to get limits for user %s : %m",
                pwd->pw_name);
@@ -353,7 +359,7 @@ pam_sm_open_session(pam_handle_t *pamh, int flags UNUSED,
     }
 
     /* Set limits */
-    if (quotactl(QCMD(Q_SETQUOTA, USRQUOTA), mntdevice, pwd->pw_uid,
+    if (quotactl(PAM_QCMD(Q_SETQUOTA, USRQUOTA), mntdevice, pwd->pw_uid,
                  (void *)&ndqblk) == -1) {
       pam_syslog(pamh, LOG_ERR, "failed to set limits for user %s on %s: %m",
                  pwd->pw_name, mntdevice);

@@ -31,9 +31,7 @@
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifdef HAVE_CONFIG_H
 #include <config.h>
-#endif
 
 #include <stdio.h>
 #include <unistd.h>
@@ -49,7 +47,7 @@ struct mapping {
   const char *new_value;
 };
 
-struct mapping items[] = {
+static struct mapping items[] = {
   {PAM_SERVICE, "PAM_SERVICE", PAM_SUCCESS, "logout"},
   {PAM_USER, "PAM_USER", PAM_SUCCESS, "noroot"},
   {PAM_TTY, "PAM_TTY", PAM_SUCCESS, "TTyX"},
@@ -142,6 +140,16 @@ main (void)
 	      return 1;
 	    }
 	}
+    }
+
+  /* 5: try to set PAM_SERVICE to NULL  */
+  retval = pam_set_item (pamh, PAM_SERVICE, NULL);
+  if (retval != PAM_BAD_ITEM)
+    {
+      fprintf (stderr,
+	       "pam_set_item (pamh, PAM_SERVICE, NULL) returned %d\n",
+	       retval);
+      return 1;
     }
 
   pam_end (pamh, 0);

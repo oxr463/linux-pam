@@ -66,30 +66,21 @@
 #include <security/pam_ext.h>
 #include <security/pam_modutil.h>
 
+#include "pam_inline.h"
+#include "pam_i18n.h"
 #include "pam_cc_compat.h"
 #include "md5.h"
 #include "support.h"
 #include "passverify.h"
-#include "bigcrypt.h"
-
-#if (HAVE_YP_GET_DEFAULT_DOMAIN || HAVE_GETDOMAINNAME) && HAVE_YP_MASTER
-# define HAVE_NIS
-#endif
 
 #ifdef HAVE_NIS
 # include <rpc/rpc.h>
-
-# if HAVE_RPCSVC_YP_PROT_H
-#  include <rpcsvc/yp_prot.h>
-# endif
-
-# if HAVE_RPCSVC_YPCLNT_H
-#  include <rpcsvc/ypclnt.h>
-# endif
+# include <rpcsvc/yp_prot.h>
+# include <rpcsvc/ypclnt.h>
 
 # include "yppasswd.h"
 
-# if !HAVE_DECL_GETRPCPORT &&!HAVE_RPCB_GETADDR
+# if !defined(HAVE_DECL_GETRPCPORT) &&!defined(HAVE_RPCB_GETADDR)
 extern int getrpcport(const char *host, unsigned long prognum,
 		      unsigned long versnum, unsigned int proto);
 # endif				/* GNU libc 2.1 */
@@ -149,26 +140,11 @@ static char *getNISserver(pam_handle_t *pamh, unsigned long long ctrl)
 #endif
 
 
-#ifdef HAVE_YP_GET_DEFAULT_DOMAIN
 	if ((err = yp_get_default_domain(&domainname)) != 0) {
 		pam_syslog(pamh, LOG_WARNING, "can't get local yp domain: %s",
 			 yperr_string(err));
 		return NULL;
 	}
-#elif defined(HAVE_GETDOMAINNAME)
-	char domainname_res[256];
-
-	if (getdomainname (domainname_res, sizeof (domainname_res)) == 0)
-	  {
-	    if (strcmp (domainname_res, "(none)") == 0)
-	      {
-		/* If domainname is not set, some systems will return "(none)" */
-		domainname_res[0] = '\0';
-	      }
-	    domainname = domainname_res;
-	  }
-	else domainname = NULL;
-#endif
 
 	if ((err = yp_master(domainname, "passwd.byname", &master)) != 0) {
 		pam_syslog(pamh, LOG_WARNING, "can't find the master ypserver: %s",
@@ -287,7 +263,7 @@ static int _unix_run_update_binary(pam_handle_t *pamh, unsigned long long ctrl, 
 	else
 		args[3] = "0";
 
-        snprintf(buffer, sizeof(buffer), "%d", remember);
+        pam_sprintf(buffer, "%d", remember);
         args[4] = buffer;
 
 	DIAG_PUSH_IGNORE_CAST_QUAL;
@@ -295,7 +271,7 @@ static int _unix_run_update_binary(pam_handle_t *pamh, unsigned long long ctrl, 
 	DIAG_POP_IGNORE_CAST_QUAL;
 
 	/* should not get here: exit with error */
-	D(("helper binary is not available"));
+	pam_syslog(pamh, LOG_ERR, "failed to execute %s: %m", UPDATE_HELPER);
 	_exit(PAM_AUTHINFO_UNAVAIL);
     } else if (child > 0) {
 	/* wait for child */
@@ -348,25 +324,25 @@ static int _unix_run_update_binary(pam_handle_t *pamh, unsigned long long ctrl, 
 
 static int check_old_password(const char *forwho, const char *newpass)
 {
-	static char buf[16384];
+	char *buf = NULL;
 	char *s_pas;
 	int retval = PAM_SUCCESS;
 	FILE *opwfile;
+	size_t n = 0;
 	size_t len = strlen(forwho);
 
-	opwfile = fopen(OLD_PASSWORDS_FILE, "r");
+	opwfile = fopen(OLD_PASSWORDS_FILE, "re");
 	if (opwfile == NULL)
 		return PAM_ABORT;
 
-	while (fgets(buf, 16380, opwfile)) {
-		if (!strncmp(buf, forwho, len) && (buf[len] == ':' ||
-			buf[len] == ',')) {
+	for (; getline(&buf, &n, opwfile) != -1; pam_overwrite_n(buf, n)) {
+		if (!strncmp(buf, forwho, len) && buf[len] == ':') {
 			char *sptr;
 			buf[strlen(buf) - 1] = '\0';
-			/* s_luser = */ strtok_r(buf, ":,", &sptr);
-			/* s_uid = */ strtok_r(NULL, ":,", &sptr);
-			/* s_npas = */ strtok_r(NULL, ":,", &sptr);
-			s_pas = strtok_r(NULL, ":,", &sptr);
+			/* s_luser = */ strtok_r(buf, ":", &sptr);
+			/* s_uid = */ strtok_r(NULL, ":", &sptr);
+			/* s_npas = */ strtok_r(NULL, ":", &sptr);
+			s_pas = strtok_r(NULL, ",", &sptr);
 			while (s_pas != NULL) {
 				char *md5pass = Goodcrypt_md5(newpass, s_pas);
 				if (md5pass == NULL || !strcmp(md5pass, s_pas)) {
@@ -374,12 +350,14 @@ static int check_old_password(const char *forwho, const char *newpass)
 					retval = PAM_AUTHTOK_ERR;
 					break;
 				}
-				s_pas = strtok_r(NULL, ":,", &sptr);
+				s_pas = strtok_r(NULL, ",", &sptr);
 				_pam_delete(md5pass);
 			}
 			break;
 		}
 	}
+	pam_overwrite_n(buf, n);
+	free(buf);
 	fclose(opwfile);
 
 	return retval;
@@ -516,7 +494,7 @@ static int _unix_verify_shadow(pam_handle_t *pamh, const char *user, unsigned lo
 {
 	struct passwd *pwent = NULL;	/* Password and shadow password */
 	struct spwd *spent = NULL;	/* file entries for the user */
-	int daysleft;
+	long daysleft;
 	int retval;
 
 	retval = get_account_info(pamh, user, &pwent, &spent);
@@ -535,6 +513,10 @@ static int _unix_verify_shadow(pam_handle_t *pamh, const char *user, unsigned lo
 	else if (retval == PAM_SUCCESS)
 		retval = check_shadow_expiry(pamh, spent, &daysleft);
 
+	if (on(UNIX_EXPIRED_ONLY, ctrl)) {
+		return retval == PAM_NEW_AUTHTOK_REQD ? PAM_SUCCESS : PAM_AUTHTOK_ERR;
+	}
+
 	if (on(UNIX__IAMROOT, ctrl) || retval == PAM_NEW_AUTHTOK_REQD)
 		return PAM_SUCCESS;
 
@@ -551,7 +533,7 @@ static int _pam_unix_approve_pass(pam_handle_t * pamh
 	const char *remark = NULL;
 	int retval = PAM_SUCCESS;
 
-	D(("&new=%p, &old=%p", pass_old, pass_new));
+	D(("&new=%p, &old=%p", pass_new, pass_old));
 	D(("new=[%s]", pass_new));
 	D(("old=[%s]", pass_old));
 
@@ -581,9 +563,10 @@ static int _pam_unix_approve_pass(pam_handle_t * pamh
 		remark = _("You must choose a shorter password.");
 		D(("length exceeded [%s]", remark));
 	} else if (off(UNIX__IAMROOT, ctrl)) {
-		if ((int)strlen(pass_new) < pass_min_len)
+		if ((int)strlen(pass_new) < pass_min_len) {
 		  remark = _("You must choose a longer password.");
-		D(("length check [%s]", remark));
+		  D(("length check [%s]", remark));
+		}
 		if (on(UNIX_REMEMBER_PASSWD, ctrl)) {
 			if ((retval = check_old_password(user, pass_new)) == PAM_AUTHTOK_ERR)
 			  remark = _("Password has been already used. Choose another.");
@@ -609,6 +592,7 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	int remember = -1;
 	int rounds = 0;
 	int pass_min_len = 0;
+	struct passwd *pwd;
 
 	/* <DO NOT free() THESE> */
 	const char *user;
@@ -654,20 +638,16 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	 * getpwnam() doesn't tell you *where* the information it gives you
 	 * came from, nor should it.  That's our job.
 	 */
-	if (_unix_comesfromsource(pamh, user, 1, on(UNIX_NIS, ctrl)) == 0) {
+	if (_unix_getpwnam(pamh, user, 1, on(UNIX_NIS, ctrl), &pwd) == 0) {
 		pam_syslog(pamh, LOG_DEBUG,
 			 "user \"%s\" does not exist in /etc/passwd%s",
 			 user, on(UNIX_NIS, ctrl) ? " or NIS" : "");
 		return PAM_USER_UNKNOWN;
-	} else {
-		struct passwd *pwd;
-		_unix_getpwnam(pamh, user, 1, 1, &pwd);
-		if (pwd == NULL) {
-			pam_syslog(pamh, LOG_DEBUG,
-				"user \"%s\" has corrupted passwd entry",
-				user);
-			return PAM_USER_UNKNOWN;
-		}
+	} else if (pwd == NULL) {
+		pam_syslog(pamh, LOG_DEBUG,
+			 "user \"%s\" has corrupted passwd entry",
+			 user);
+		return PAM_USER_UNKNOWN;
 	}
 
 	/*
@@ -706,7 +686,7 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv)
 		} else {
 			D(("process run by root so do nothing this time around"));
 			pass_old = NULL;
-			retval = PAM_SUCCESS;	/* root doesn't have too */
+			retval = PAM_SUCCESS;	/* root doesn't have to */
 		}
 
 		if (retval != PAM_SUCCESS) {
@@ -717,7 +697,10 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv)
 		pass_old = NULL;
 		retval = _unix_verify_shadow(pamh,user, ctrl);
 		if (retval == PAM_AUTHTOK_ERR) {
-			if (off(UNIX__IAMROOT, ctrl))
+			if (on(UNIX_EXPIRED_ONLY, ctrl))
+				_make_remark(pamh, ctrl, PAM_ERROR_MSG,
+					     _("Your password is not expired."));
+			else if (off(UNIX__IAMROOT, ctrl))
 				_make_remark(pamh, ctrl, PAM_ERROR_MSG,
 					     _("You must wait longer to change your password."));
 			else
@@ -788,7 +771,7 @@ pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv)
 			 * password is acceptable.
 			 */
 
-			if (*(const char *)pass_new == '\0') {	/* "\0" password = NULL */
+			if (*pass_new == '\0') {	/* "\0" password = NULL */
 				pass_new = NULL;
 			}
 			retval = _pam_unix_approve_pass(pamh, ctrl, pass_old,

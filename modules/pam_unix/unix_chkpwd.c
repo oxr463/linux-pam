@@ -27,6 +27,7 @@
 #include <errno.h>
 #ifdef HAVE_LIBAUDIT
 #include <libaudit.h>
+#include "audit.h"
 #endif
 
 #include <security/_pam_types.h>
@@ -40,7 +41,7 @@ static int _check_expiry(const char *uname)
 	struct spwd *spent;
 	struct passwd *pwent;
 	int retval;
-	int daysleft;
+	long daysleft;
 
 	retval = get_account_info(uname, &pwent, &spent);
 	if (retval != PAM_SUCCESS) {
@@ -55,38 +56,9 @@ static int _check_expiry(const char *uname)
 	}
 
 	retval = check_shadow_expiry(spent, &daysleft);
-	printf("%d\n", daysleft);
+	printf("%ld\n", daysleft);
 	return retval;
 }
-
-#ifdef HAVE_LIBAUDIT
-static int _audit_log(int type, const char *uname, int rc)
-{
-	int audit_fd;
-
-	audit_fd = audit_open();
-	if (audit_fd < 0) {
-		/* You get these error codes only when the kernel doesn't have
-		 * audit compiled in. */
-		if (errno == EINVAL || errno == EPROTONOSUPPORT ||
-			errno == EAFNOSUPPORT)
-			return PAM_SUCCESS;
-
-		helper_log_err(LOG_CRIT, "audit_open() failed: %m");
-		return PAM_AUTH_ERR;
-	}
-
-	rc = audit_log_acct_message(audit_fd, type, NULL, "PAM:unix_chkpwd",
-		uname, -1, NULL, NULL, NULL, rc == PAM_SUCCESS);
-	if (rc == -EPERM && geteuid() != 0) {
-		rc = 0;
-	}
-
-	audit_close(audit_fd);
-
-	return rc < 0 ? PAM_AUTH_ERR : PAM_SUCCESS;
-}
-#endif
 
 int main(int argc, char *argv[])
 {
@@ -97,6 +69,7 @@ int main(int argc, char *argv[])
 	int retval = PAM_AUTH_ERR;
 	char *user;
 	char *passwords[] = { pass };
+	uid_t ruid = getuid();
 
 	/*
 	 * Catch or ignore as many signal as possible.
@@ -106,7 +79,7 @@ int main(int argc, char *argv[])
 	/*
 	 * we establish that this program is running with non-tty stdin.
 	 * this is to discourage casual use. It does *NOT* prevent an
-	 * intruder from repeatadly running this program to determine the
+	 * intruder from repeatedly running this program to determine the
 	 * password of the current user (brute force attack, but one for
 	 * which the attacker must already have gained access to the user's
 	 * account).
@@ -115,9 +88,9 @@ int main(int argc, char *argv[])
 	if (isatty(STDIN_FILENO) || argc != 3 ) {
 		helper_log_err(LOG_NOTICE
 		      ,"inappropriate use of Unix helper binary [UID=%d]"
-			 ,getuid());
+			 ,ruid);
 #ifdef HAVE_LIBAUDIT
-		_audit_log(AUDIT_ANOM_EXEC, getuidname(getuid()), PAM_SYSTEM_ERR);
+		audit_log(AUDIT_ANOM_EXEC, getuidname(ruid), PAM_SYSTEM_ERR);
 #endif
 		fprintf(stderr
 		 ,"This binary is not designed for running in this way\n"
@@ -130,26 +103,37 @@ int main(int argc, char *argv[])
 	 * Determine what the current user's name is.
 	 * We must thus skip the check if the real uid is 0.
 	 */
-	if (getuid() == 0) {
-	  user=argv[1];
-	}
-	else {
-	  user = getuidname(getuid());
+	if (ruid != 0) {
+	  user = getuidname(ruid);
 	  /* if the caller specifies the username, verify that user
 	     matches it */
 	  if (user == NULL || strcmp(user, argv[1])) {
-	    user = argv[1];
-	    /* no match -> permanently change to the real user and proceed */
-	    if (setuid(getuid()) != 0)
-		return PAM_AUTH_ERR;
+	    uid_t euid = geteuid();
+	    gid_t rgid = getgid();
+	    uid_t egid = getegid();
+
+	    /* no match -> permanently change to the real user and group */
+	    if (rgid != egid && setregid(rgid, rgid) != 0)
+	      return PAM_AUTH_ERR;
+
+	    if (ruid != euid && setreuid(ruid, ruid) != 0)
+	      return PAM_AUTH_ERR;
+
+	    /* check that we cannot change back */
+	    if (rgid != egid && setegid(egid) == 0)
+	      return PAM_AUTH_ERR;
+
+	    if (ruid != euid && seteuid(euid) == 0)
+	      return PAM_AUTH_ERR;
 	  }
 	}
 
-	option=argv[2];
+	user = argv[1];
+	option = argv[2];
 
 	if (strcmp(option, "chkexpiry") == 0)
 	  /* Check account information from the shadow file */
-	  return _check_expiry(argv[1]);
+	  return _check_expiry(user);
 	/* read the nullok/nonull option */
 	else if (strcmp(option, "nullok") == 0)
 	  nullok = 1;
@@ -157,7 +141,7 @@ int main(int argc, char *argv[])
 	  nullok = 0;
 	else {
 #ifdef HAVE_LIBAUDIT
-	  _audit_log(AUDIT_ANOM_EXEC, getuidname(getuid()), PAM_SYSTEM_ERR);
+	  audit_log(AUDIT_ANOM_EXEC, getuidname(ruid), PAM_SYSTEM_ERR);
 #endif
 	  return PAM_SYSTEM_ERR;
 	}
@@ -176,7 +160,7 @@ int main(int argc, char *argv[])
 
 	retval = helper_verify_password(user, pass, nullok);
 
-	memset(pass, '\0', PAM_MAX_RESP_SIZE);	/* clear memory of the password */
+	pam_overwrite_array(pass);	/* clear memory of the password */
 
 	/* return pass or fail */
 
@@ -184,8 +168,8 @@ int main(int argc, char *argv[])
 		if (!nullok || !blankpass) {
 			/* no need to log blank pass test */
 #ifdef HAVE_LIBAUDIT
-			if (getuid() != 0)
-				_audit_log(AUDIT_USER_AUTH, user, PAM_AUTH_ERR);
+			if (ruid != 0)
+				audit_log(AUDIT_USER_AUTH, user, PAM_AUTH_ERR);
 #endif
 			helper_log_err(LOG_NOTICE, "password check failed for user (%s)", user);
 		}
@@ -198,9 +182,9 @@ int main(int argc, char *argv[])
 		else
 			return PAM_AUTH_ERR;
 	} else {
-	        if (getuid() != 0) {
+	        if (ruid != 0) {
 #ifdef HAVE_LIBAUDIT
-			return _audit_log(AUDIT_USER_AUTH, user, PAM_SUCCESS);
+			return audit_log(AUDIT_USER_AUTH, user, PAM_SUCCESS);
 #else
 		        return PAM_SUCCESS;
 #endif

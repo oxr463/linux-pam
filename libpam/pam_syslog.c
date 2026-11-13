@@ -31,7 +31,8 @@
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "config.h"
+#include "pam_private.h"
+#include "pam_inline.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,8 +43,6 @@
 #include <security/pam_modules.h>
 #include <security/_pam_macros.h>
 #include <security/pam_ext.h>
-
-#include "pam_private.h"
 
 #ifndef LOG_AUTHPRIV
 #define LOG_AUTHPRIV LOG_AUTH
@@ -78,9 +77,10 @@ pam_vsyslog (const pam_handle_t *pamh, int priority,
 
   if (pamh && pamh->mod_name)
     {
-      if (asprintf (&msgbuf1, "%s(%s:%s):", pamh->mod_name,
-		    pamh->service_name?pamh->service_name:"<unknown>",
-		    _pam_choice2str (pamh->choice)) < 0)
+      msgbuf1 = pam_asprintf("%s(%s:%s):", pamh->mod_name,
+		    pamh->service_name ? pamh->service_name : "<unknown>",
+		    _pam_choice2str (pamh->choice));
+      if (msgbuf1 == NULL)
 	{
 	  syslog (LOG_AUTHPRIV|LOG_ERR, "asprintf: %m");
 	  return;

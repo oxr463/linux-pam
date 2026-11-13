@@ -8,6 +8,7 @@
 
 #include "pam_private.h"
 #include "pam_modutil_private.h"
+#include "pam_inline.h"
 
 #ifdef HAVE_LIBAUDIT
 #include <stdio.h>
@@ -37,14 +38,14 @@ _pam_audit_writelog(pam_handle_t *pamh, int audit_fd, int type,
       grantors_field = "";
   }
 
-  if (asprintf(&buf, "PAM:%s%s%s", message, grantors_field, grantors) >= 0) {
+  if ((buf = pam_asprintf("PAM:%s%s%s", message, grantors_field, grantors)) != NULL) {
       rc = audit_log_acct_message(audit_fd, type, NULL, buf,
 	(retval != PAM_USER_UNKNOWN && pamh->user) ? pamh->user : "?",
 	-1, pamh->rhost, NULL, pamh->tty, retval == PAM_SUCCESS);
       free(buf);
   }
 
-  /* libaudit sets errno to his own negative error code. This can be
+  /* libaudit sets errno to its own negative error code. This can be
      an official errno number, but must not. It can also be a audit
      internal error code. Which makes errno useless :-((. Try the
      best to fix it. */
@@ -203,7 +204,7 @@ int
 _pam_audit_end(pam_handle_t *pamh, int status UNUSED)
 {
   if (! (pamh->audit_state & PAMAUDIT_LOGGED)) {
-    /* PAM library is being shut down without any of the auditted
+    /* PAM library is being shut down without any of the audited
      * stacks having been run. Assume that this is sshd faking
      * things for an unknown user.
      */

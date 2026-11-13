@@ -1,16 +1,14 @@
-<?xml version="1.0" encoding="ISO-8859-1"?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
-                   "http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd">
+<refentry xmlns="http://docbook.org/ns/docbook" version="5.0" xml:id="pam_stress">
 
-<refentry id='pam_stress'>
-
+  <info><date>%PAM_RELEASE_DATE%</date></info>
   <refmeta>
     <refentrytitle>pam_stress</refentrytitle>
     <manvolnum>8</manvolnum>
-    <refmiscinfo class='setdesc'>Linux-PAM Manual</refmiscinfo>
+    <refmiscinfo class="source">Linux-PAM %PAM_VERSION%</refmiscinfo>
+    <refmiscinfo class="manual">Linux-PAM Manual</refmiscinfo>
   </refmeta>
 
-  <refnamediv id='pam_stress-name'>
+  <refnamediv xml:id="pam_stress-name">
     <refname>pam_stress</refname>
     <refpurpose>The stress-testing PAM module</refpurpose>
   </refnamediv>
@@ -18,42 +16,42 @@
 <!-- body begins here -->
 
   <refsynopsisdiv>
-    <cmdsynopsis id="pam_stress-cmdsynopsis">
+    <cmdsynopsis xml:id="pam_stress-cmdsynopsis" sepchar=" ">
       <command>pam_stress.so</command>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         debug
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         no_warn
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         use_first_pass
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         try_first_pass
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         rootok
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         expired
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         fail_1
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         fail_2
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         prelim
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         required
       </arg>
     </cmdsynopsis>
   </refsynopsisdiv>
 
-  <refsect1 id="pam_stress-description">
+  <refsect1 xml:id="pam_stress-description">
     <title>DESCRIPTION</title>
     <para>
       The pam_stress PAM module is mainly intended to give the impression of failing as a fully
@@ -61,13 +59,13 @@ functioning module might.
     </para>
   </refsect1>
 
-  <refsect1 id="pam_stress-options">
+  <refsect1 xml:id="pam_stress-options">
     <title>OPTIONS</title>
     <variablelist>
 
       <varlistentry>
         <term>
-          <option>debug</option>
+          debug
         </term>
         <listitem>
           <para>
@@ -79,7 +77,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>no_warn</option>
+          no_warn
         </term>
         <listitem>
           <para>
@@ -91,7 +89,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>use_first_pass</option>
+          use_first_pass
         </term>
         <listitem>
           <para>
@@ -103,7 +101,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>try_first_pass</option>
+          try_first_pass
         </term>
         <listitem>
           <para>
@@ -115,7 +113,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>rootok</option>
+          rootok
         </term>
         <listitem>
           <para>
@@ -128,7 +126,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>expired</option>
+          expired
         </term>
         <listitem>
           <para>
@@ -141,7 +139,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>fail_1</option>
+          fail_1
         </term>
         <listitem>
           <para>
@@ -152,7 +150,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>fail_2</option>
+          fail_2
         </term>
         <listitem>
           <para>
@@ -164,7 +162,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>prelim</option>
+          prelim
         </term>
         <listitem>
           <para>
@@ -175,7 +173,7 @@ functioning module might.
 
       <varlistentry>
         <term>
-          <option>required</option>
+          required
         </term>
         <listitem>
           <para>
@@ -189,7 +187,7 @@ functioning module might.
     </variablelist>
   </refsect1>
 
-  <refsect1 id="pam_stress-types">
+  <refsect1 xml:id="pam_stress-types">
     <title>MODULE TYPES PROVIDED</title>
     <para>
       All module types (<option>auth</option>, <option>account</option>,
@@ -197,7 +195,7 @@ functioning module might.
     </para>
   </refsect1>
 
-  <refsect1 id="pam_stress-return_values">
+  <refsect1 xml:id="pam_stress-return_values">
     <title>RETURN VALUES</title>
     <variablelist>
       <varlistentry>
@@ -307,7 +305,7 @@ functioning module might.
     </variablelist>
   </refsect1>
 
-  <refsect1 id='pam_stress-notes'>
+  <refsect1 xml:id="pam_stress-notes">
     <title>NOTES</title>
     <para>
       This module uses the stress_new_pwd data string which tells
@@ -316,7 +314,7 @@ functioning module might.
     </para>
   </refsect1>
 
-  <refsect1 id='pam_stress-examples'>
+  <refsect1 xml:id="pam_stress-examples">
     <title>EXAMPLES</title>
     <programlisting>
 #%PAM-1.0
@@ -329,7 +327,7 @@ session  required pam_stress.so
     </programlisting>
   </refsect1>
 
-  <refsect1 id="pam_stress-see_also">
+  <refsect1 xml:id="pam_stress-see_also">
     <title>SEE ALSO</title>
     <para>
       <citerefentry>
@@ -344,7 +342,7 @@ session  required pam_stress.so
     </para>
   </refsect1>
 
-  <refsect1 id="pam_stress-authors">
+  <refsect1 xml:id="pam_stress-authors">
     <title>AUTHORS</title>
     <para>
       The pam_stress PAM module was developed by

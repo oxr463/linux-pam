@@ -25,6 +25,8 @@
 
 #ifdef HAVE_NDBM_H
 # include <ndbm.h>
+#elif defined(HAVE_GDBM_H)
+# include <gdbm.h>
 #else
 # ifdef HAVE_DB_H
 #  define DB_DBM_HSEARCH    1 /* use the dbm interface */
@@ -39,6 +41,13 @@
 #include <security/pam_ext.h>
 #include <security/_pam_macros.h>
 #include "pam_inline.h"
+#include "pam_i18n.h"
+
+#ifndef HAVE_GDBM_H
+# define COND_UNUSED UNUSED
+#else
+# define COND_UNUSED
+#endif /* HAVE_GDBM_H */
 
 /*
  * Conversation function to obtain the user's password
@@ -62,7 +71,7 @@ obtain_authtok(pam_handle_t *pamh)
     retval = pam_set_item(pamh, PAM_AUTHTOK, resp);
 
     /* clean it up */
-    _pam_overwrite(resp);
+    pam_overwrite_string(resp);
     _pam_drop(resp);
 
     if ( (retval != PAM_SUCCESS) ||
@@ -76,12 +85,13 @@ obtain_authtok(pam_handle_t *pamh)
 
 static int
 _pam_parse (pam_handle_t *pamh, int argc, const char **argv,
-	    const char **database, const char **cryptmode)
+	    const char **database, const char **cryptmode, char *key_sep)
 {
   int ctrl;
 
   *database = NULL;
   *cryptmode = NULL;
+  *key_sep = '-';
 
   /* step through arguments */
   for (ctrl = 0; argc-- > 0; ++argv)
@@ -100,6 +110,16 @@ _pam_parse (pam_handle_t *pamh, int argc, const char **argv,
 	ctrl |= PAM_UNKNOWN_OK_ARG;
       else if (!strcasecmp(*argv, "key_only"))
 	ctrl |= PAM_KEY_ONLY_ARG;
+      else if ((str = pam_str_skip_icase_prefix(*argv, "key_only=")) != NULL)
+	{
+	  if (str[0] != '\0' && str[1] == '\0') {
+	    ctrl |= PAM_KEY_ONLY_ARG | PAM_KEY_ONLY_EXPLICIT_ARG;
+	    *key_sep = str[0];
+	  } else {
+	    pam_syslog(pamh, LOG_ERR,
+		       "key_only= requires a single-byte separator - ignored");
+	  }
+	}
       else if (!strcasecmp(*argv, "use_first_pass"))
 	ctrl |= PAM_USE_FPASS_ARG;
       else if (!strcasecmp(*argv, "try_first_pass"))
@@ -126,7 +146,71 @@ _pam_parse (pam_handle_t *pamh, int argc, const char **argv,
 	}
     }
 
+  if ((ctrl & PAM_KEY_ONLY_ARG) && !(ctrl & PAM_KEY_ONLY_EXPLICIT_ARG))
+    pam_syslog(pamh, LOG_WARNING,
+	       "key_only without explicit separator is deprecated,"
+	       " use key_only=<sep> instead");
+
   return ctrl;
+}
+
+/*
+ * Database abstraction functions
+ */
+static void *
+db_open(const char *database, mode_t file_mode)
+{
+#ifdef HAVE_GDBM_H
+    return gdbm_open(database, 4096, GDBM_READER, file_mode, NULL);
+#else
+    return dbm_open(database, O_RDONLY, file_mode);
+#endif /* HAVE_GDBM_H */
+}
+
+static datum
+db_firstkey(void *dbm)
+{
+#ifdef HAVE_GDBM_H
+    return gdbm_firstkey(dbm);
+#else
+    return dbm_firstkey(dbm);
+#endif /* HAVE_GDBM_H */
+}
+
+static datum
+db_nextkey(void *dbm, datum key COND_UNUSED)
+{
+#ifdef HAVE_GDBM_H
+    return gdbm_nextkey(dbm, key);
+#else
+    return dbm_nextkey(dbm);
+#endif /* HAVE_GDBM_H */
+}
+
+static datum
+db_fetch(void *dbm, datum key)
+{
+#ifdef HAVE_GDBM_H
+    return gdbm_fetch(dbm, key);
+#else
+    return dbm_fetch(dbm, key);
+#endif /* HAVE_GDBM_H */
+}
+
+static int
+db_close(void *dbm)
+{
+#ifdef HAVE_GDBM_H
+# ifdef GDBM_CLOSE_RETURNS_INT
+    return gdbm_close(dbm);
+# else
+    gdbm_close(dbm);
+    return 0;
+# endif
+#else
+    dbm_close(dbm);
+    return 0;
+#endif /* HAVE_GDBM_H */
 }
 
 
@@ -141,28 +225,41 @@ _pam_parse (pam_handle_t *pamh, int argc, const char **argv,
  */
 static int
 user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
-	     const char *user, const char *pass, int ctrl)
+	     const char *user, const char *pass, int ctrl, char key_sep)
 {
+#ifdef HAVE_GDBM_H
+    GDBM_FILE *dbm;
+#else
     DBM *dbm;
+#endif
     datum key, data;
 
     /* Open the DB file. */
-    dbm = dbm_open(database, O_RDONLY, 0644);
+    dbm = db_open(database, 0644);
     if (dbm == NULL) {
 	pam_syslog(pamh, LOG_ERR,
 		   "user_lookup: could not open database `%s': %m", database);
 	return -2;
     }
 
+    if ((ctrl & PAM_KEY_ONLY_EXPLICIT_ARG) && strchr(user, key_sep)) {
+	pam_syslog(pamh, LOG_NOTICE,
+		   "user_lookup: username must not contain '%c'"
+		   " in key_only mode", key_sep);
+	db_close(dbm);
+	return 1; /* invalid username, not a database error */
+    }
+
     /* dump out the database contents for debugging */
     if (ctrl & PAM_DUMP_ARG) {
 	pam_syslog(pamh, LOG_INFO, "Database dump:");
-	for (key = dbm_firstkey(dbm);  key.dptr != NULL;
-	     key = dbm_nextkey(dbm)) {
-	    data = dbm_fetch(dbm, key);
+	for (key = db_firstkey(dbm);  key.dptr != NULL;
+	     key = db_nextkey(dbm, key)) {
+	     data = db_fetch(dbm, key);
 	    pam_syslog(pamh, LOG_INFO,
-		       "key[len=%d] = `%s', data[len=%d] = `%s'",
-		       key.dsize, key.dptr, data.dsize, data.dptr);
+		       "key[len=%d] = `%.*s', data[len=%d] = `%.*s'",
+		       key.dsize, key.dsize, key.dptr ? key.dptr : "",
+		       data.dsize, data.dsize, data.dptr ? data.dptr : "");
 	}
     }
 
@@ -170,9 +267,7 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
     memset(&key, 0, sizeof(key));
     memset(&data, 0, sizeof(data));
     if (ctrl & PAM_KEY_ONLY_ARG) {
-	if (asprintf(&key.dptr, "%s-%s", user, pass) < 0)
-	    key.dptr = NULL;
-	else
+	if ((key.dptr = pam_asprintf("%s%c%s", user, key_sep, pass)) != NULL)
 	    key.dsize = strlen(key.dptr);
     } else {
         key.dptr = strdup(user);
@@ -180,8 +275,8 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
     }
 
     if (key.dptr) {
-	data = dbm_fetch(dbm, key);
-	memset(key.dptr, 0, key.dsize);
+	data = db_fetch(dbm, key);
+	pam_overwrite_n(key.dptr, key.dsize);
 	free(key.dptr);
     }
 
@@ -196,16 +291,11 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
 
 	if (ctrl & PAM_KEY_ONLY_ARG)
 	  {
-	    dbm_close (dbm);
+	    db_close (dbm);
 	    return 0; /* found it, data contents don't matter */
 	}
 
 	if (cryptmode && pam_str_skip_icase_prefix(cryptmode, "crypt") != NULL) {
-
-	  /* crypt(3) password storage */
-
-	  char *cryptpw = NULL;
-
 	  if (data.dsize < 13) {
 	    /* hash is too short */
 	    pam_syslog(pamh, LOG_INFO, "password hash in database is too short");
@@ -219,13 +309,13 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
 	    if (pwhash == NULL) {
 	      pam_syslog(pamh, LOG_CRIT, "strndup failed: data.dptr");
 	    } else {
+	      char *cryptpw = NULL;
 #ifdef HAVE_CRYPT_R
 	      struct crypt_data *cdata = NULL;
-	      cdata = malloc(sizeof(*cdata));
+	      cdata = calloc(1, sizeof(*cdata));
 	      if (cdata == NULL) {
 	        pam_syslog(pamh, LOG_CRIT, "malloc failed: struct crypt_data");
 	      } else {
-	        cdata->initialized = 0;
 	        cryptpw = crypt_r(pass, pwhash, cdata);
 	      }
 #else
@@ -244,23 +334,36 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
 	        }
 	      }
 #ifdef HAVE_CRYPT_R
+	      pam_overwrite_object(cdata);
 	      free(cdata);
+#else
+	      pam_overwrite_string(cryptpw);
 #endif
 	    }
+	    pam_overwrite_string(pwhash);
 	    free(pwhash);
 	  }
 	} else {
 
 	  /* Unknown password encryption method -
-	   * default to plaintext password storage
+	   * default to plaintext password storage.
+	   * Use constant-time comparison: strncmp/strncasecmp leak prefix bytes
+	   * and the length pre-check leaks the password length (CWE-208).
 	   */
 
-	  if (strlen(pass) != (size_t)data.dsize) {
-	    compare = 1; /* wrong password len -> wrong password */
-	  } else if (ctrl & PAM_ICASE_ARG) {
-	    compare = strncasecmp(data.dptr, pass, data.dsize);
+	  /* libdb is not guaranteed to produce null-terminated strings */
+	  char *stored = strndup(data.dptr, data.dsize);
+	  if (stored == NULL) {
+	    pam_syslog(pamh, LOG_CRIT, "strndup failed: data.dptr");
+	    compare = -2;
 	  } else {
-	    compare = strncmp(data.dptr, pass, data.dsize);
+	    if (ctrl & PAM_ICASE_ARG) {
+	      compare = pam_consttime_strcaseeq(pass, stored) ? 0 : 1;
+	    } else {
+	      compare = pam_consttime_streq(pass, stored) ? 0 : 1;
+	    }
+	    pam_overwrite_string(stored);
+	    free(stored);
 	  }
 
 	  if (cryptmode && pam_str_skip_icase_prefix(cryptmode, "none") == NULL
@@ -272,7 +375,7 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
 
 	}
 
-	dbm_close(dbm);
+	db_close(dbm);
 	if (compare == 0)
 	    return 0; /* match */
 	else
@@ -287,44 +390,48 @@ user_lookup (pam_handle_t *pamh, const char *database, const char *cryptmode,
 	/* probably we should check dbm_error() here */
 
         if ((ctrl & PAM_KEY_ONLY_ARG) == 0) {
-	    dbm_close(dbm);
+	    db_close(dbm);
             return 1; /* not key_only, so no entry => no entry for the user */
         }
 
         /* now handle the key_only case */
-        for (key = dbm_firstkey(dbm);
+        size_t ulen = strlen(user);
+        for (key = db_firstkey(dbm);
              key.dptr != NULL;
-             key = dbm_nextkey(dbm)) {
-            int compare;
-            /* first compare the user portion (case sensitive) */
-            compare = strncmp(key.dptr, user, strlen(user));
+             key = db_nextkey(dbm, key)) {
+            /* assume failure */
+            int compare = -1;
+
+            /*
+             * First compare the user portion (case sensitive);
+             * user is caller-supplied, so this memcmp leaks nothing secret.
+             */
+            if ((size_t)key.dsize > ulen &&
+                key.dptr[ulen] == key_sep &&
+                memcmp(key.dptr, user, ulen) == 0) {
+                saw_user = 1;
+                char *stored_pass = strndup(key.dptr + ulen + 1,
+                                            key.dsize - ulen - 1);
+                if (stored_pass == NULL) {
+                    db_close(dbm);
+                    return -2;
+                }
+                /* compare the password portion (case (in)sensitive) */
+                if (ctrl & PAM_ICASE_ARG) {
+                    compare = pam_consttime_strcaseeq(pass, stored_pass) ? 0 : 1;
+                } else {
+                    compare = pam_consttime_streq(pass, stored_pass) ? 0 : 1;
+                }
+                pam_overwrite_string(stored_pass);
+                free(stored_pass);
+            }
+
             if (compare == 0) {
-                /* assume failure */
-                compare = -1;
-                /* if we have the divider where we expect it to be... */
-                if (key.dptr[strlen(user)] == '-') {
-		    saw_user = 1;
-		    if ((size_t)key.dsize == strlen(user) + 1 + strlen(pass)) {
-		        if (ctrl & PAM_ICASE_ARG) {
-			    /* compare the password portion (case insensitive)*/
-                            compare = strncasecmp(key.dptr + strlen(user) + 1,
-                                                  pass,
-                                                  strlen(pass));
-		        } else {
-                            /* compare the password portion (case sensitive) */
-                            compare = strncmp(key.dptr + strlen(user) + 1,
-                                              pass,
-                                              strlen(pass));
-		        }
-		    }
-                }
-                if (compare == 0) {
-                    dbm_close(dbm);
-                    return 0; /* match */
-                }
+                db_close(dbm);
+                return 0; /* match */
             }
         }
-        dbm_close(dbm);
+        db_close(dbm);
 	if (saw_user)
 	    return -1; /* saw the user, but password mismatch */
 	else
@@ -345,10 +452,11 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags UNUSED,
      const void *password;
      const char *database = NULL;
      const char *cryptmode = NULL;
+     char key_sep;
      int retval = PAM_AUTH_ERR, ctrl;
 
      /* parse arguments */
-     ctrl = _pam_parse(pamh, argc, argv, &database, &cryptmode);
+     ctrl = _pam_parse(pamh, argc, argv, &database, &cryptmode, &key_sep);
      if (database == NULL) {
         pam_syslog(pamh, LOG_ERR, "can not get the database name");
         return PAM_SERVICE_ERR;
@@ -394,7 +502,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags UNUSED,
 		    username);
 
      /* Now use the username to look up password in the database file */
-     retval = user_lookup(pamh, database, cryptmode, username, password, ctrl);
+     retval = user_lookup(pamh, database, cryptmode, username, password, ctrl, key_sep);
      switch (retval) {
 	 case -2:
 	     /* some sort of system error. The log was already printed */
@@ -441,10 +549,11 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags UNUSED,
     const char *username;
     const char *database = NULL;
     const char *cryptmode = NULL;
+    char key_sep;
     int retval = PAM_AUTH_ERR, ctrl;
 
     /* parse arguments */
-    ctrl = _pam_parse(pamh, argc, argv, &database, &cryptmode);
+    ctrl = _pam_parse(pamh, argc, argv, &database, &cryptmode, &key_sep);
 
     /* Get the username */
     retval = pam_get_user(pamh, &username, NULL);
@@ -455,7 +564,7 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags UNUSED,
     }
 
     /* Now use the username to look up password in the database file */
-    retval = user_lookup(pamh, database, cryptmode, username, "", ctrl);
+    retval = user_lookup(pamh, database, cryptmode, username, "", ctrl, key_sep);
     switch (retval) {
         case -2:
 	    /* some sort of system error. The log was already printed */

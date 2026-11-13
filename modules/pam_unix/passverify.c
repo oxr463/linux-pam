@@ -5,6 +5,7 @@
 #include <security/_pam_macros.h>
 #include <security/pam_modules.h>
 #include "support.h"
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -21,6 +22,9 @@
 #include <fcntl.h>
 #ifdef HAVE_CRYPT_H
 #include <crypt.h>
+#endif
+#ifdef USE_PWACCESS
+#include <pwaccess.h>
 #endif
 
 #include "pam_cc_compat.h"
@@ -52,7 +56,7 @@
 static void
 strip_hpux_aging(char *hash)
 {
-	static const char valid[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	static const char *const valid = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 		"abcdefghijklmnopqrstuvwxyz"
 		"0123456789./";
 	if ((*hash != '$') && (strlen(hash) > 13)) {
@@ -75,9 +79,13 @@ PAMH_ARG_DECL(int verify_pwd_hash,
 
 	strip_hpux_aging(hash);
 	hash_len = strlen(hash);
-	if (!hash_len) {
+
+	if (p && p[0] == '\0' && !nullok) {
+		/* The passed password is empty */
+		retval = PAM_AUTH_ERR;
+	} else if (!hash_len) {
 		/* the stored password is NULL */
-		if (nullok) { /* this means we've succeeded */
+		if (p && p[0] == '\0' && nullok) { /* this means we've succeeded */
 			D(("user has empty password - access granted"));
 			retval = PAM_SUCCESS;
 		} else {
@@ -89,14 +97,14 @@ PAMH_ARG_DECL(int verify_pwd_hash,
 	} else {
 		if (pam_str_skip_prefix(hash, "$1$") != NULL) {
 			pp = Goodcrypt_md5(p, hash);
-			if (pp && strcmp(pp, hash) != 0) {
+			if (pp && !pam_consttime_streq(pp, hash)) {
 				_pam_delete(pp);
 				pp = Brokencrypt_md5(p, hash);
 			}
 		} else if (*hash != '$' && hash_len >= 13) {
 			pp = bigcrypt(p, hash);
 			if (pp && hash_len == 13 && strlen(pp) > hash_len) {
-				_pam_overwrite(pp + hash_len);
+				pam_overwrite_string(pp + hash_len);
 			}
 		} else {
 			/*
@@ -143,11 +151,10 @@ PAMH_ARG_DECL(int verify_pwd_hash,
 #endif
 #ifdef HAVE_CRYPT_R
 			struct crypt_data *cdata;
-			cdata = malloc(sizeof(*cdata));
+			cdata = calloc(1, sizeof(*cdata));
 			if (cdata != NULL) {
-				cdata->initialized = 0;
 				pp = x_strdup(crypt_r(p, hash, cdata));
-				memset(cdata, '\0', sizeof(*cdata));
+				pam_overwrite_object(cdata);
 				free(cdata);
 			}
 #else
@@ -157,9 +164,9 @@ PAMH_ARG_DECL(int verify_pwd_hash,
 		p = NULL;		/* no longer needed here */
 
 		/* the moment of truth -- do we agree with the password? */
-		D(("comparing state of pp[%s] and hash[%s]", pp, hash));
+		D(("comparing state of pp[%s] and hash[%s]", pp ? pp : "(null)", hash));
 
-		if (pp && strcmp(pp, hash) == 0) {
+		if (pp && pam_consttime_streq(pp, hash)) {
 			retval = PAM_SUCCESS;
 		} else {
 			retval = PAM_AUTH_ERR;
@@ -196,64 +203,51 @@ PAMH_ARG_DECL(int get_account_info,
 	*pwd = pam_modutil_getpwnam(pamh, name);	/* Get password file entry... */
 	*spwdent = NULL;
 
-	if (*pwd != NULL) {
-		if (strcmp((*pwd)->pw_passwd, "*NP*") == 0)
-		{ /* NIS+ */
-#ifdef HELPER_COMPILE
-			uid_t save_euid, save_uid;
-
-			save_euid = geteuid();
-			save_uid = getuid();
-			if (save_uid == (*pwd)->pw_uid) {
-				if (setreuid(save_euid, save_uid))
-					return PAM_CRED_INSUFFICIENT;
-			} else  {
-				if (setreuid(0, -1))
-					return PAM_CRED_INSUFFICIENT;
-				if (setreuid(-1, (*pwd)->pw_uid)) {
-					if (setreuid(-1, 0)
-					    || setreuid(0, -1)
-					    || setreuid(-1, (*pwd)->pw_uid)) {
-						return PAM_CRED_INSUFFICIENT;
-					}
-				}
-			}
-
-			*spwdent = pam_modutil_getspnam(pamh, name);
-			if (save_uid == (*pwd)->pw_uid) {
-				if (setreuid(save_uid, save_euid))
-					return PAM_CRED_INSUFFICIENT;
-			} else {
-				if (setreuid(-1, 0)
-				    || setreuid(save_uid, -1)
-				    || setreuid(-1, save_euid))
-					return PAM_CRED_INSUFFICIENT;
-			}
-
-			if (*spwdent == NULL || (*spwdent)->sp_pwdp == NULL)
-				return PAM_AUTHINFO_UNAVAIL;
-#else
-			/* we must run helper for NIS+ passwords */
-			return PAM_UNIX_RUN_HELPER;
-#endif
-		} else if (is_pwd_shadowed(*pwd)) {
-			/*
-			 * ...and shadow password file entry for this user,
-			 * if shadowing is enabled
-			 */
-			*spwdent = pam_modutil_getspnam(pamh, name);
-			if (*spwdent == NULL) {
-#ifndef HELPER_COMPILE
-				/* still a chance the user can authenticate */
-				return PAM_UNIX_RUN_HELPER;
-#endif
-				return PAM_AUTHINFO_UNAVAIL;
-			}
-			if ((*spwdent)->sp_pwdp == NULL)
-				return PAM_AUTHINFO_UNAVAIL;
-		}
-	} else {
+	if (*pwd == NULL) {
 		return PAM_USER_UNKNOWN;
+	}
+
+	if (is_pwd_shadowed(*pwd)) {
+#if defined(HELPER_COMPILE) || defined(PAM_UNIX_TRY_GETSPNAM)
+		/*
+		 * shadow password file entry for this user,
+		 * if shadowing is enabled
+		 */
+#ifdef USE_PWACCESS
+		int r;
+		bool complete = false;
+		char *error = NULL;
+
+		r = pwaccess_get_user_record(-1, name, NULL, spwdent, &complete, &error);
+		if (r < 0) {
+			if (!PWACCESS_IS_NOT_RUNNING(r))
+				pam_syslog(pamh, LOG_ERR, "%s",
+					   error ? error : strerror(-r));
+			free(error);
+		}
+		if (complete)
+			return PAM_SUCCESS;
+		struct_shadow_freep(spwdent);
+#endif
+		*spwdent = pam_modutil_getspnam(pamh, name);
+		if (*spwdent == NULL || (*spwdent)->sp_pwdp == NULL
+# ifndef HELPER_COMPILE
+			/* synthesized entry from libnss-systemd */
+			|| (strcmp(name, "root") == 0 &&
+			    strcmp((*spwdent)->sp_pwdp, "!*") == 0)
+# endif
+		   )
+# ifdef HELPER_COMPILE
+			return PAM_AUTHINFO_UNAVAIL;
+# endif
+#endif /* HELPER_COMPILE || PAM_UNIX_TRY_GETSPNAM */
+#ifndef HELPER_COMPILE
+		/*
+		 * The helper has to be invoked to deal with
+		 * the shadow password file entry.
+		 */
+		return PAM_UNIX_RUN_HELPER;
+#endif
 	}
 	return PAM_SUCCESS;
 }
@@ -280,13 +274,13 @@ PAMH_ARG_DECL(int get_pwd_hash,
 }
 
 PAMH_ARG_DECL(int check_shadow_expiry,
-	struct spwd *spent, int *daysleft)
+	struct spwd *spent, long *daysleft)
 {
-	long int curdays;
+	long int curdays, passed;
 	*daysleft = -1;
 	curdays = (long int)(time(NULL) / (60 * 60 * 24));
-	D(("today is %d, last change %d", curdays, spent->sp_lstchg));
-	if ((curdays >= spent->sp_expire) && (spent->sp_expire != -1)) {
+	D(("today is %ld, last change %ld", curdays, spent->sp_lstchg));
+	if (spent->sp_expire >= 0 && curdays >= spent->sp_expire) {
 		D(("account expired"));
 		return PAM_ACCT_EXPIRED;
 	}
@@ -295,31 +289,41 @@ PAMH_ARG_DECL(int check_shadow_expiry,
 		*daysleft = 0;
 		return PAM_NEW_AUTHTOK_REQD;
 	}
+	if (spent->sp_lstchg < 0) {
+		D(("password aging disabled"));
+		return PAM_SUCCESS;
+	}
 	if (curdays < spent->sp_lstchg) {
 		pam_syslog(pamh, LOG_DEBUG,
 			 "account %s has password changed in future",
 			 spent->sp_namp);
 		return PAM_SUCCESS;
 	}
-	if ((curdays - spent->sp_lstchg > spent->sp_max)
-	    && (curdays - spent->sp_lstchg > spent->sp_inact)
-	    && (curdays - spent->sp_lstchg > spent->sp_max + spent->sp_inact)
-	    && (spent->sp_max != -1) && (spent->sp_inact != -1)) {
-		*daysleft = (int)((spent->sp_lstchg + spent->sp_max) - curdays);
-		D(("authtok expired"));
-		return PAM_AUTHTOK_EXPIRED;
+	passed = curdays - spent->sp_lstchg;
+	if (spent->sp_max >= 0) {
+		if (spent->sp_inact >= 0) {
+			long inact = spent->sp_max < LONG_MAX - spent->sp_inact ?
+			    spent->sp_max + spent->sp_inact : LONG_MAX;
+			if (passed >= inact) {
+				*daysleft = inact - passed;
+				D(("authtok expired"));
+				return PAM_AUTHTOK_EXPIRED;
+			}
+		}
+		if (passed >= spent->sp_max) {
+			D(("need a new password 2"));
+			return PAM_NEW_AUTHTOK_REQD;
+		}
+		if (spent->sp_warn > 0) {
+			long warn = spent->sp_warn > spent->sp_max ? -1 :
+			    spent->sp_max - spent->sp_warn;
+			if (passed >= warn) {
+				*daysleft = spent->sp_max - passed;
+				D(("warn before expiry"));
+			}
+		}
 	}
-	if ((curdays - spent->sp_lstchg > spent->sp_max) && (spent->sp_max != -1)) {
-		D(("need a new password 2"));
-		return PAM_NEW_AUTHTOK_REQD;
-	}
-	if ((curdays - spent->sp_lstchg > spent->sp_max - spent->sp_warn)
-	    && (spent->sp_max != -1) && (spent->sp_warn != -1)) {
-		*daysleft = (int)((spent->sp_lstchg + spent->sp_max) - curdays);
-		D(("warn before expiry"));
-	}
-	if ((curdays - spent->sp_lstchg < spent->sp_min)
-	    && (spent->sp_min != -1)) {
+	if (spent->sp_min > 0 && passed < spent->sp_min) {
 		/*
 		 * The last password change was too recent. This error will be ignored
 		 * if no password change is attempted.
@@ -332,9 +336,31 @@ PAMH_ARG_DECL(int check_shadow_expiry,
 
 /* passwd/salt conversion macros */
 
-#define PW_TMPFILE              "/etc/npasswd"
-#define SH_TMPFILE              "/etc/nshadow"
-#define OPW_TMPFILE             "/etc/security/nopasswd"
+#define PW_TMPFILE              "/etc/.pam.passwdXXXXXX"
+#define SH_TMPFILE              "/etc/.pam.shadowXXXXXX"
+#define OPW_TMPFILE             SCONFIG_DIR "/.pam.opasswdXXXXXX"
+
+/*
+ * fmkstemp - creates and opens a temporary file from given pattern
+ */
+static FILE *
+fmkstemp(char *name)
+{
+        FILE *fp;
+        int fd;
+
+        fd = mkstemp(name);
+        if (fd == -1)
+                return NULL;
+
+        fp = fdopen(fd, "we");
+        if (fp == NULL) {
+                close(fd);
+                return NULL;
+        }
+
+        return fp;
+}
 
 /*
  * i64c - convert an integer to a radix 64 character
@@ -372,7 +398,7 @@ crypt_make_salt(char *where, int length)
 	int fd;
 	int rv;
 
-	if ((rv = fd = open(PAM_PATH_RANDOMDEV, O_RDONLY)) != -1) {
+	if ((rv = fd = open(PAM_PATH_RANDOMDEV, O_RDONLY | O_CLOEXEC)) != -1) {
 		while ((rv = read(fd, where, length)) != length && errno == EINTR);
 		close (fd);
 	}
@@ -427,7 +453,7 @@ PAMH_ARG_DECL(char * create_password_hash,
 #else
 	char salt[64]; /* contains rounds number + max 16 bytes of salt + algo id */
 #endif
-	char *sp;
+	char *sp, *ret;
 #ifdef HAVE_CRYPT_R
 	struct crypt_data *cdata = NULL;
 #endif
@@ -445,20 +471,10 @@ PAMH_ARG_DECL(char * create_password_hash,
 		algoid = "$5$";
 	} else if (on(UNIX_SHA512_PASS, ctrl)) {
 		algoid = "$6$";
-	} else { /* must be crypt/bigcrypt */
-		char tmppass[9];
-		char *hashed;
-
-		crypt_make_salt(salt, 2);
-		if (off(UNIX_BIGCRYPT, ctrl) && strlen(password) > 8) {
-			strncpy(tmppass, password, sizeof(tmppass)-1);
-			tmppass[sizeof(tmppass)-1] = '\0';
-			password = tmppass;
-		}
-		hashed = bigcrypt(password, salt);
-		memset(tmppass, '\0', sizeof(tmppass));
-		password = NULL;
-		return hashed;
+	} else {
+		pam_syslog(pamh, LOG_ERR, "%s",
+			   "No supported password hash algorithm selected.");
+		return NULL;
 	}
 
 #if defined(CRYPT_GENSALT_IMPLEMENTS_AUTO_ENTROPY) && CRYPT_GENSALT_IMPLEMENTS_AUTO_ENTROPY
@@ -476,9 +492,8 @@ PAMH_ARG_DECL(char * create_password_hash,
 #endif /* CRYPT_GENSALT_IMPLEMENTS_AUTO_ENTROPY */
 #ifdef HAVE_CRYPT_R
 	sp = NULL;
-	cdata = malloc(sizeof(*cdata));
+	cdata = calloc(1, sizeof(*cdata));
 	if (cdata != NULL) {
-		cdata->initialized = 0;
 		sp = crypt_r(password, salt, cdata);
 	}
 #else
@@ -493,61 +508,32 @@ PAMH_ARG_DECL(char * create_password_hash,
 			   on(UNIX_BLOWFISH_PASS, ctrl) ? "blowfish" :
 			   on(UNIX_SHA256_PASS, ctrl) ? "sha256" :
 			   on(UNIX_SHA512_PASS, ctrl) ? "sha512" : algoid);
-		if(sp) {
-		   memset(sp, '\0', strlen(sp));
-		}
 #ifdef HAVE_CRYPT_R
+		pam_overwrite_object(cdata);
 		free(cdata);
+#else
+		pam_overwrite_string(sp);
 #endif
 		return NULL;
 	}
-	sp = x_strdup(sp);
+	ret = strdup(sp);
 #ifdef HAVE_CRYPT_R
+	pam_overwrite_object(cdata);
 	free(cdata);
+#else
+	pam_overwrite_string(sp);
 #endif
-	return sp;
+	return ret;
 }
 
 #ifdef WITH_SELINUX
 int
 unix_selinux_confined(void)
 {
-    static int confined = -1;
-    int fd;
-    char tempfile[]="/etc/.pwdXXXXXX";
-
-    if (confined != -1)
-	return confined;
-
-    /* cannot be confined without SELinux enabled */
-    if (!SELINUX_ENABLED){
-	confined = 0;
-	return confined;
-    }
-
-    /* let's try opening shadow read only */
-    if ((fd=open("/etc/shadow", O_RDONLY)) != -1) {
-        close(fd);
-        confined = 0;
-        return confined;
-    }
-
-    if (errno == EACCES) {
-	confined = 1;
-	return confined;
-    }
-
-    /* shadow opening failed because of other reasons let's try
-       creating a file in /etc */
-    if ((fd=mkstemp(tempfile)) != -1) {
-        unlink(tempfile);
-        close(fd);
-        confined = 0;
-        return confined;
-    }
-
-    confined = 1;
-    return confined;
+    if (is_selinux_enabled() > 0 &&
+	security_getenforce() > 0)
+        return 1;
+    return 0;
 }
 
 #else
@@ -621,16 +607,16 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
 		  int howmany)
 #endif
 {
-    static char buf[16384];
-    static char nbuf[16384];
+    char tempfile[] = OPW_TMPFILE;
+    char *buf = NULL;
     char *s_luser, *s_uid, *s_npas, *s_pas, *pass;
     int npas;
     FILE *pwfile, *opwfile;
     int err = 0;
-    int oldmask;
     int found = 0;
     struct passwd *pwd = NULL;
     struct stat st;
+    size_t bufsize = 0;
     size_t len = strlen(forwho);
 #ifdef WITH_SELINUX
     char *prev_context_raw = NULL;
@@ -643,8 +629,6 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
     if (oldpass == NULL) {
 	return PAM_SUCCESS;
     }
-
-    oldmask = umask(077);
 
 #ifdef WITH_SELINUX
     if (SELINUX_ENABLED) {
@@ -664,14 +648,13 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
       freecon(passwd_context_raw);
     }
 #endif
-    pwfile = fopen(OPW_TMPFILE, "w");
-    umask(oldmask);
+    pwfile = fmkstemp(tempfile);
     if (pwfile == NULL) {
       err = 1;
-      goto done;
+      goto tmp_error;
     }
 
-    opwfile = fopen(OLD_PASSWORDS_FILE, "r");
+    opwfile = fopen(OLD_PASSWORDS_FILE, "re");
     if (opwfile == NULL) {
 	fclose(pwfile);
       err = 1;
@@ -698,9 +681,10 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
 	goto done;
     }
 
-    while (fgets(buf, 16380, opwfile)) {
-	if (!strncmp(buf, forwho, len) && strchr(":,\n", buf[len]) != NULL) {
-	    char *sptr = NULL;
+    for (; getline(&buf, &bufsize, opwfile) != -1; pam_overwrite_n(buf, bufsize)) {
+	if (!strncmp(buf, forwho, len) && strchr(":\n", buf[len]) != NULL) {
+	    char *ep, *sptr = NULL;
+	    long value;
 	    found = 1;
 	    if (howmany == 0)
 		continue;
@@ -720,8 +704,12 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
 		found = 0;
 		continue;
 	    }
-	    s_pas = strtok_r(NULL, ":", &sptr);
-	    npas = strtol(s_npas, NULL, 10) + 1;
+	    s_pas = strtok_r(NULL, "", &sptr);
+	    value = strtol(s_npas, &ep, 10);
+	    if (value < 0 || value >= INT_MAX || s_npas == ep || *ep != '\0')
+		npas = 0;
+	    else
+		npas = (int)value + 1;
 	    while (npas > howmany && s_pas != NULL) {
 		s_pas = strpbrk(s_pas, ",");
 		if (s_pas != NULL)
@@ -730,21 +718,21 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
 	    }
 	    pass = crypt_md5_wrapper(oldpass);
 	    if (s_pas == NULL)
-		snprintf(nbuf, sizeof(nbuf), "%s:%s:%d:%s\n",
-			 s_luser, s_uid, npas, pass);
+		err = fprintf(pwfile, "%s:%s:%d:%s\n",
+			      s_luser, s_uid, npas, pass) < 0;
 	    else
-		snprintf(nbuf, sizeof(nbuf),"%s:%s:%d:%s,%s\n",
-			 s_luser, s_uid, npas, s_pas, pass);
+		err = fprintf(pwfile, "%s:%s:%d:%s,%s\n",
+			      s_luser, s_uid, npas, s_pas, pass) < 0;
 	    _pam_delete(pass);
-	    if (fputs(nbuf, pwfile) < 0) {
-		err = 1;
+	    if (err)
 		break;
-	    }
 	} else if (fputs(buf, pwfile) < 0) {
 	    err = 1;
 	    break;
 	}
     }
+    pam_overwrite_n(buf, bufsize);
+    free(buf);
     fclose(opwfile);
 
     if (!found) {
@@ -753,12 +741,9 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
 	    err = 1;
 	} else {
 	    pass = crypt_md5_wrapper(oldpass);
-	    snprintf(nbuf, sizeof(nbuf), "%s:%lu:1:%s\n",
-		     forwho, (unsigned long)pwd->pw_uid, pass);
+	    err = fprintf(pwfile, "%s:%lu:1:%s\n",
+			  forwho, (unsigned long)pwd->pw_uid, pass) < 0;
 	    _pam_delete(pass);
-	    if (fputs(nbuf, pwfile) < 0) {
-		err = 1;
-	    }
 	}
     }
 
@@ -774,9 +759,12 @@ save_old_password(pam_handle_t *pamh, const char *forwho, const char *oldpass,
 
 done:
     if (!err) {
-	if (rename(OPW_TMPFILE, OLD_PASSWORDS_FILE))
+	if (rename(tempfile, OLD_PASSWORDS_FILE))
 	    err = 1;
     }
+    if (err)
+	unlink(tempfile);
+tmp_error:
 #ifdef WITH_SELINUX
     if (SELINUX_ENABLED) {
       if (setfscreatecon_raw(prev_context_raw)) {
@@ -787,27 +775,21 @@ done:
       prev_context_raw = NULL;
     }
 #endif
-    if (!err) {
-	return PAM_SUCCESS;
-    } else {
-	unlink(OPW_TMPFILE);
-	return PAM_AUTHTOK_ERR;
-    }
+    return err ? PAM_AUTHTOK_ERR : PAM_SUCCESS;
 }
 
 PAMH_ARG_DECL(int unix_update_passwd,
 	const char *forwho, const char *towhat)
 {
+    char tempfile[] = PW_TMPFILE;
     struct passwd *tmpent = NULL;
     struct stat st;
     FILE *pwfile, *opwfile;
     int err = 1;
-    int oldmask;
 #ifdef WITH_SELINUX
     char *prev_context_raw = NULL;
 #endif
 
-    oldmask = umask(077);
 #ifdef WITH_SELINUX
     if (SELINUX_ENABLED) {
       char *passwd_context_raw = NULL;
@@ -826,14 +808,13 @@ PAMH_ARG_DECL(int unix_update_passwd,
       freecon(passwd_context_raw);
     }
 #endif
-    pwfile = fopen(PW_TMPFILE, "w");
-    umask(oldmask);
+    pwfile = fmkstemp(tempfile);
     if (pwfile == NULL) {
       err = 1;
-      goto done;
+      goto tmp_error;
     }
 
-    opwfile = fopen("/etc/passwd", "r");
+    opwfile = fopen("/etc/passwd", "re");
     if (opwfile == NULL) {
 	fclose(pwfile);
 	err = 1;
@@ -894,12 +875,15 @@ PAMH_ARG_DECL(int unix_update_passwd,
 
 done:
     if (!err) {
-	if (!rename(PW_TMPFILE, "/etc/passwd"))
+	if (!rename(tempfile, "/etc/passwd"))
 	    pam_syslog(pamh,
 		LOG_NOTICE, "password changed for %s", forwho);
 	else
 	    err = 1;
     }
+    if (err)
+        unlink(tempfile);
+tmp_error:
 #ifdef WITH_SELINUX
     if (SELINUX_ENABLED) {
       if (setfscreatecon_raw(prev_context_raw)) {
@@ -910,28 +894,21 @@ done:
       prev_context_raw = NULL;
     }
 #endif
-    if (!err) {
-	return PAM_SUCCESS;
-    } else {
-	unlink(PW_TMPFILE);
-	return PAM_AUTHTOK_ERR;
-    }
+    return err ? PAM_AUTHTOK_ERR : PAM_SUCCESS;
 }
 
 PAMH_ARG_DECL(int unix_update_shadow,
 	const char *forwho, char *towhat)
 {
+    char tempfile[] = SH_TMPFILE;
     struct spwd spwdent, *stmpent = NULL;
     struct stat st;
     FILE *pwfile, *opwfile;
     int err = 0;
-    int oldmask;
     int wroteentry = 0;
 #ifdef WITH_SELINUX
     char *prev_context_raw = NULL;
 #endif
-
-    oldmask = umask(077);
 
 #ifdef WITH_SELINUX
     if (SELINUX_ENABLED) {
@@ -951,14 +928,13 @@ PAMH_ARG_DECL(int unix_update_shadow,
       freecon(shadow_context_raw);
     }
 #endif
-    pwfile = fopen(SH_TMPFILE, "w");
-    umask(oldmask);
+    pwfile = fmkstemp(tempfile);
     if (pwfile == NULL) {
 	err = 1;
-	goto done;
+	goto tmp_error;
     }
 
-    opwfile = fopen("/etc/shadow", "r");
+    opwfile = fopen("/etc/shadow", "re");
     if (opwfile == NULL) {
 	fclose(pwfile);
 	err = 1;
@@ -1039,13 +1015,15 @@ PAMH_ARG_DECL(int unix_update_shadow,
 
  done:
     if (!err) {
-	if (!rename(SH_TMPFILE, "/etc/shadow"))
+	if (!rename(tempfile, "/etc/shadow"))
 	    pam_syslog(pamh,
 		LOG_NOTICE, "password changed for %s", forwho);
 	else
 	    err = 1;
     }
-
+    if (err)
+        unlink(tempfile);
+tmp_error:
 #ifdef WITH_SELINUX
     if (SELINUX_ENABLED) {
       if (setfscreatecon_raw(prev_context_raw)) {
@@ -1056,13 +1034,7 @@ PAMH_ARG_DECL(int unix_update_shadow,
       prev_context_raw = NULL;
     }
 #endif
-
-    if (!err) {
-	return PAM_SUCCESS;
-    } else {
-	unlink(SH_TMPFILE);
-	return PAM_AUTHTOK_ERR;
-    }
+    return err ? PAM_AUTHTOK_ERR : PAM_SUCCESS;
 }
 
 #ifdef HELPER_COMPILE
@@ -1079,18 +1051,12 @@ helper_verify_password(const char *name, const char *p, int nullok)
 	if (pwd == NULL || hash == NULL) {
 		helper_log_err(LOG_NOTICE, "check pass; user unknown");
 		retval = PAM_USER_UNKNOWN;
-	} else if (p[0] == '\0' && nullok) {
-		if (hash[0] == '\0') {
-			retval = PAM_SUCCESS;
-		} else {
-			retval = PAM_AUTH_ERR;
-		}
 	} else {
 		retval = verify_pwd_hash(p, hash, nullok);
 	}
 
 	if (hash) {
-		_pam_overwrite(hash);
+		pam_overwrite_string(hash);
 		_pam_drop(hash);
 	}
 
@@ -1100,7 +1066,6 @@ helper_verify_password(const char *name, const char *p, int nullok)
 }
 
 void
-PAM_FORMAT((printf, 2, 3))
 helper_log_err(int err, const char *format, ...)
 {
 	va_list args;
@@ -1125,7 +1090,7 @@ su_sighandler(int sig)
 	}
 #endif
         if (sig > 0) {
-                _exit(sig);
+                _exit(128 + (sig & 127));
         }
 }
 
@@ -1158,16 +1123,12 @@ char *
 getuidname(uid_t uid)
 {
         struct passwd *pw;
-        static char username[256];
 
         pw = getpwuid(uid);
         if (pw == NULL)
                 return NULL;
 
-        strncpy(username, pw->pw_name, sizeof(username));
-        username[sizeof(username) - 1] = '\0';
-
-        return username;
+        return pw->pw_name;
 }
 
 #endif

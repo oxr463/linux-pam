@@ -7,11 +7,12 @@
  */
 
 #include "libpamc.h"
+#include "pam_inline.h"
 
 static int __pamc_exec_agent(pamc_handle_t pch, pamc_agent_t *agent)
 {
-    char *full_path;
-    int found_agent, length, reset_length, to_agent[2], from_agent[2];
+    char *full_path = NULL;
+    int found_agent, length, to_agent[2], from_agent[2];
     int return_code = PAM_BPC_FAIL;
 
     if (agent->id[agent->id_length] != '\0') {
@@ -26,16 +27,6 @@ static int __pamc_exec_agent(pamc_handle_t pch, pamc_agent_t *agent)
 	}
     }
 
-    /* enough memory for any path + this agent */
-    reset_length = 3 + pch->max_path + agent->id_length;
-    D(("reset_length = %d (3+%d+%d)",
-       reset_length, pch->max_path, agent->id_length));
-    full_path = malloc(reset_length);
-    if (full_path == NULL) {
-	D(("no memory for agent path"));
-	return PAM_BPC_FAIL;
-    }
-
     found_agent = 0;
     for (length=0; pch->agent_paths[length]; ++length) {
 	struct stat buf;
@@ -43,7 +34,10 @@ static int __pamc_exec_agent(pamc_handle_t pch, pamc_agent_t *agent)
 	D(("path: [%s]", pch->agent_paths[length]));
 	D(("agent id: [%s]", agent->id));
 
-	sprintf(full_path, "%s/%s", pch->agent_paths[length], agent->id);
+	if ((full_path = pam_asprintf("%s/%s", pch->agent_paths[length], agent->id)) == NULL) {
+	    D(("no memory for agent path"));
+	    return PAM_BPC_FAIL;
+	}
 
 	D(("looking for agent here: [%s]\n", full_path));
 	if (stat(full_path, &buf) == 0) {
@@ -51,6 +45,9 @@ static int __pamc_exec_agent(pamc_handle_t pch, pamc_agent_t *agent)
 	    found_agent = 1;
 	    break;
 	}
+
+	free(full_path);
+	full_path = NULL;
     }
 
     if (! found_agent) {
@@ -143,7 +140,6 @@ close_the_agent:
     close(to_agent[1]);
 
 free_and_return:
-    memset(full_path, 0, reset_length);
     free(full_path);
 
     D(("returning %d", return_code));
@@ -223,14 +219,13 @@ int pamc_disable(pamc_handle_t pch, const char *agent_id)
 	return PAM_BPC_FALSE;
     }
 
-    block->id =	malloc(1 + strlen(agent_id));
+    block->id =	strdup(agent_id);
     if (block->id == NULL) {
 	D(("no memory for agent id"));
 	free(block);
 	return PAM_BPC_FALSE;
     }
 
-    strcpy(block->id, agent_id);
     block->next = pch->blocked_agents;
     pch->blocked_agents = block;
 
@@ -244,9 +239,9 @@ int pamc_disable(pamc_handle_t pch, const char *agent_id)
 int pamc_load(pamc_handle_t pch, const char *agent_id)
 {
     pamc_agent_t *agent;
-    int length;
+    size_t length;
 
-    /* santity checking */
+    /* sanity checking */
 
     if (pch == NULL) {
 	D(("pch is NULL"));
@@ -301,10 +296,10 @@ int pamc_load(pamc_handle_t pch, const char *agent_id)
 
 fail_free_agent_id:
 
-    memset(agent->id, 0, agent->id_length);
+    pam_overwrite_n(agent->id, agent->id_length);
     free(agent->id);
 
-    memset(agent, 0, sizeof(*agent));
+    pam_overwrite_object(agent);
 
 fail_free_agent:
 
@@ -321,13 +316,15 @@ int __pamc_valid_agent_id(int id_length, const char *id)
     int post, i;
 
     for (i=post=0 ; i < id_length; ++i) {
-	int ch = id[i++];
+	int ch = id[i];
 
-	if (isalpha(ch) || isdigit(ch) || (ch == '_')) {
+	if (isalpha((unsigned char)ch) || isdigit((unsigned char)ch) || (ch == '_')) {
+	    if (post)
+		post = 2;               /* seen a domain character */
 	    continue;
-	} else if (post && (ch == '.')) {
+	} else if ((post == 2) && (ch == '.')) {
 	    continue;
-	} else if ((i > 1) && (!post) && (ch == '@')) {
+	} else if ((i > 0) && (!post) && (ch == '@')) {
 	    post = 1;
 	} else {
 	    D(("id=%s contains '%c' which is illegal", id, ch));
@@ -337,6 +334,9 @@ int __pamc_valid_agent_id(int id_length, const char *id)
 
     if (!i) {
 	D(("length of id is 0"));
+	return 0;
+    } else if (post == 1) {
+	D(("id=%s has no domain after '@'", id));
 	return 0;
     } else {
 	return 1;                       /* id is valid */
@@ -371,10 +371,8 @@ static pamc_id_node_t *__pamc_add_node(pamc_id_node_t *root, const char *id,
 	pamc_id_node_t *node = calloc(1, sizeof(pamc_id_node_t));
 
 	if (node) {
-	    node->agent_id = malloc(1+strlen(id));
-	    if (node->agent_id) {
-		strcpy(node->agent_id, id);
-	    } else {
+	    node->agent_id = strdup(id);
+	    if (node->agent_id == NULL) {
 		free(node);
 		node = NULL;
 	    }
@@ -392,10 +390,8 @@ static pamc_id_node_t *__pamc_add_node(pamc_id_node_t *root, const char *id,
 static pamc_id_node_t *__pamc_liberate_nodes(pamc_id_node_t *tree)
 {
     if (tree) {
-	if (tree->agent_id) {
-	    free(tree->agent_id);
-	    tree->agent_id = NULL;
-	}
+	free(tree->agent_id);
+	tree->agent_id = NULL;
 
 	tree->left = __pamc_liberate_nodes(tree->left);
 	tree->right = __pamc_liberate_nodes(tree->right);

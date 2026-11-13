@@ -6,7 +6,7 @@ shift 1
 
 if test `id -u` -ne 0 ; then
   echo "You need to be root to run the tests"
-  exit 1
+  exit 77
 fi
 
 XTESTS="$@"
@@ -22,6 +22,10 @@ for config in access.conf group.conf time.conf limits.conf ; do
 		mv /etc/security/$config /etc/security/$config-pam-xtests
 	install -m 644 "${SRCDIR}"/$config /etc/security/$config
 done
+[ -f /etc/shells ] &&
+        mv /etc/shells /etc/shells-pam-xtests
+install -m 644 "${SRCDIR}"/shells.conf /etc/shells
+
 [ -f /etc/security/opasswd ] &&
 	mv /etc/security/opasswd /etc/security/opasswd-pam-xtests
 
@@ -57,6 +61,9 @@ for config in access.conf group.conf time.conf limits.conf opasswd ; do
 		rm -f /etc/security/$config
 	fi
 done
+
+[ -f "/etc/shells-pam-xtests" ] &&
+        mv /etc/shells-pam-xtests /etc/shells
 
 if test "$failed" -ne 0; then
 	  echo "==================="

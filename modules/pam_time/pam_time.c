@@ -33,8 +33,14 @@
 #include <libaudit.h>
 #endif
 
+#define PAM_TIME_CONF	(SCONFIG_DIR "/time.conf")
+#ifdef VENDOR_SCONFIG_DIR
+#define VENDOR_PAM_TIME_CONF (VENDOR_SCONFIG_DIR "/time.conf")
+#endif
+
 #define PAM_TIME_BUFLEN        1000
 #define FIELD_SEPARATOR        ';'   /* this is new as of .02 */
+#define FIELD_IGNORE            (-1)
 
 #define PAM_DEBUG_ARG       0x0001
 #define PAM_NO_AUDIT        0x0002
@@ -53,7 +59,7 @@ _pam_parse (const pam_handle_t *pamh, int argc, const char **argv, const char **
 {
     int ctrl = 0;
 
-    *conffile = PAM_TIME_CONF;
+    *conffile = NULL;
     /* step through arguments */
     for (; argc-- > 0; ++argv) {
 	const char *str;
@@ -77,6 +83,20 @@ _pam_parse (const pam_handle_t *pamh, int argc, const char **argv, const char **
 	}
     }
 
+    if (*conffile == NULL) {
+	*conffile = PAM_TIME_CONF;
+#ifdef VENDOR_PAM_TIME_CONF
+	/*
+	 * Check whether PAM_TIME_CONF file is available.
+	 * If it does not exist, fall back to VENDOR_PAM_TIME_CONF file.
+	 */
+	struct stat buffer;
+	if (stat(*conffile, &buffer) != 0 && errno == ENOENT) {
+	    *conffile = VENDOR_PAM_TIME_CONF;
+	}
+#endif
+    }
+
     return ctrl;
 }
 
@@ -88,7 +108,7 @@ shift_buf(char *mem, int from)
     char *start = mem;
     while ((*mem = mem[from]) != '\0')
 	++mem;
-    memset(mem, '\0', PAM_TIME_BUFLEN - (mem - start));
+    pam_overwrite_n(mem, PAM_TIME_BUFLEN - (mem - start));
     return mem;
 }
 
@@ -120,7 +140,7 @@ read_field(const pam_handle_t *pamh, int fd, char **buf, int *from, int *state, 
 
     /* is buf set ? */
     if (! *buf) {
-	*buf = (char *) calloc(1, PAM_TIME_BUFLEN+1);
+	*buf = calloc(1, PAM_TIME_BUFLEN+1);
 	if (! *buf) {
 	    pam_syslog(pamh, LOG_CRIT, "out of memory");
 	    D(("no memory"));
@@ -149,7 +169,7 @@ read_field(const pam_handle_t *pamh, int fd, char **buf, int *from, int *state, 
 	if (i < 0) {
 	    pam_syslog(pamh, LOG_ERR, "error reading %s: %m", file);
 	    close(fd);
-	    memset(*buf, 0, PAM_TIME_BUFLEN);
+	    pam_overwrite_n(*buf, PAM_TIME_BUFLEN);
 	    _pam_drop(*buf);
 	    *state = STATE_EOF;
 	    return -1;
@@ -168,7 +188,7 @@ read_field(const pam_handle_t *pamh, int fd, char **buf, int *from, int *state, 
 	return -1;
     }
 
-    memset(to, '\0', PAM_TIME_BUFLEN - (to - *buf));
+    pam_overwrite_n(to, PAM_TIME_BUFLEN - (to - *buf));
 
     to = *buf;
     onspace = 1; /* delete any leading spaces */
@@ -215,7 +235,7 @@ read_field(const pam_handle_t *pamh, int fd, char **buf, int *from, int *state, 
 		    ++src; /* skip it */
 		    break;
 		}
-		/* fallthrough */
+		PAM_FALLTHROUGH;
 	    default:
 		*to++ = c;
 		onspace = 0;
@@ -267,7 +287,7 @@ logic_member(const char *string, int *at)
 	       break;
 
 	  default:
-	       if (isalpha(c) || c == '*' || isdigit(c) || c == '_'
+	       if (isalpha((unsigned char)c) || c == '*' || isdigit((unsigned char)c) || c == '_'
 		    || c == '-' || c == '.' || c == '/' || c == ':') {
 		    token = 1;
 	       } else if (token) {
@@ -300,9 +320,12 @@ logic_field(pam_handle_t *pamh, const void *me, const char *x, int rule,
 	  if (next == VAL) {
 	       if (c == '!')
 		    not = !not;
-	       else if (isalpha(c) || c == '*' || isdigit(c) || c == '_'
+	       else if (isalpha((unsigned char)c) || c == '*' || isdigit((unsigned char)c) || c == '_'
                     || c == '-' || c == '.' || c == '/' || c == ':') {
-		    right = not ^ agrees(pamh, me, x+at, l, rule);
+		    right = agrees(pamh, me, x+at, l, rule);
+		    if (right == FIELD_IGNORE)
+			 return FIELD_IGNORE;
+		    right = not ^ right;
 		    if (oper == AND)
 			 left &= right;
 		    else
@@ -312,7 +335,7 @@ logic_field(pam_handle_t *pamh, const void *me, const char *x, int rule,
 		    pam_syslog(pamh, LOG_ERR,
 			       "garbled syntax; expected name (rule #%d)",
 			       rule);
-		    return FALSE;
+		    return FIELD_IGNORE;
 	       }
 	  } else {   /* OP */
 	       switch (c) {
@@ -327,12 +350,18 @@ logic_field(pam_handle_t *pamh, const void *me, const char *x, int rule,
 			       "garbled syntax; expected & or | (rule #%d)",
 			       rule);
 		    D(("%c at %d",c,at));
-		    return FALSE;
+		    return FIELD_IGNORE;
 	       }
 	       next = VAL;
 	       not = FALSE;
 	  }
 	  at += l;
+     }
+
+     if (next == VAL) {
+	  pam_syslog(pamh, LOG_ERR,
+		     "garbled syntax; expected name (rule #%d)", rule);
+	  return FIELD_IGNORE;
      }
 
      return left;
@@ -349,7 +378,13 @@ is_same(pam_handle_t *pamh UNUSED, const void *A, const char *b,
      for (i=0; len > 0; ++i, --len) {
 	  if (b[i] != a[i]) {
 	       if (b[i++] == '*') {
-		    return (!--len || !strncmp(b+i,a+strlen(a)-len,len));
+		    size_t a_len;
+		    if (!--len)
+			return TRUE;
+		    a_len = strlen(a);
+		    if (a_len < (size_t) len)
+			return FALSE;
+		    return !strncmp(b + i, a + a_len - len, len);
 	       } else
 		    return FALSE;
 	  }
@@ -407,13 +442,13 @@ static int
 check_time(pam_handle_t *pamh, const void *AT, const char *times,
 	   int len, int rule)
 {
-     int not,pass;
+     int pass;
      int marked_day, time_start, time_end;
      const TIME *at;
      int i,j=0;
 
      at = AT;
-     D(("chcking: 0%o/%.4d vs. %s", at->day, at->minute, times));
+     D(("checking: 0%o/%.4d vs. %s", at->day, at->minute, times));
 
      if (times == NULL) {
 	  /* this should not happen */
@@ -423,20 +458,13 @@ check_time(pam_handle_t *pamh, const void *AT, const char *times,
 	  return FALSE;
      }
 
-     if (times[j] == '!') {
-	  ++j;
-	  not = TRUE;
-     } else {
-	  not = FALSE;
-     }
-
-     for (marked_day = 0; len > 0 && isalpha(times[j]); --len) {
+     for (marked_day = 0; len > 1 && isalpha((unsigned char)times[j]); len -= 2) {
 	  int this_day=-1;
 
 	  D(("%c%c ?", times[j], times[j+1]));
 	  for (i=0; days[i].d != NULL; ++i) {
-	       if (tolower(times[j]) == days[i].d[0]
-		   && tolower(times[j+1]) == days[i].d[1] ) {
+	       if (tolower((unsigned char)times[j]) == days[i].d[0]
+		   && tolower((unsigned char)times[j+1]) == days[i].d[1] ) {
 		    this_day = days[i].bit;
 		    break;
 	       }
@@ -444,18 +472,18 @@ check_time(pam_handle_t *pamh, const void *AT, const char *times,
 	  j += 2;
 	  if (this_day == -1) {
 	       pam_syslog(pamh, LOG_ERR, "bad day specified (rule #%d)", rule);
-	       return FALSE;
+	       return FIELD_IGNORE;
 	  }
 	  marked_day ^= this_day;
      }
      if (marked_day == 0) {
-	  pam_syslog(pamh, LOG_ERR, "no day specified");
-	  return FALSE;
+	  pam_syslog(pamh, LOG_ERR, "no day specified (rule #%d)", rule);
+	  return FIELD_IGNORE;
      }
      D(("day range = 0%o", marked_day));
 
      time_start = 0;
-     for (i=0; len > 0 && i < 4 && isdigit(times[i+j]); ++i, --len) {
+     for (i=0; len > 0 && i < 4 && isdigit((unsigned char)times[i+j]); ++i, --len) {
 	  time_start *= 10;
 	  time_start += times[i+j]-'0';        /* is this portable? */
      }
@@ -463,7 +491,7 @@ check_time(pam_handle_t *pamh, const void *AT, const char *times,
 
      if (times[j] == '-') {
 	  time_end = 0;
-	  for (i=1; len > 0 && i < 5 && isdigit(times[i+j]); ++i, --len) {
+	  for (i=1; len > 0 && i < 5 && isdigit((unsigned char)times[i+j]); ++i, --len) {
 	       time_end *= 10;
 	       time_end += times[i+j]-'0';    /* is this portable */
 	  }
@@ -474,7 +502,7 @@ check_time(pam_handle_t *pamh, const void *AT, const char *times,
      D(("i=%d, time_end=%d, times[j]='%c'", i, time_end, times[j]));
      if (i != 5 || time_end == -1) {
 	  pam_syslog(pamh, LOG_ERR, "no/bad times specified (rule #%d)", rule);
-	  return TRUE;
+	  return FIELD_IGNORE;
      }
      D(("times(%d to %d)", time_start,time_end));
      D(("marked_day = 0%o", marked_day));
@@ -503,7 +531,7 @@ check_time(pam_handle_t *pamh, const void *AT, const char *times,
 	  }
      }
 
-     return (not ^ pass);
+     return pass;
 }
 
 static int
@@ -536,6 +564,8 @@ check_account(pam_handle_t *pamh, const char *service,
 	  }
 
 	  good = logic_field(pamh, service, buffer, count, is_same);
+	  if (good == FIELD_IGNORE)
+	       good = FALSE;
 	  D(("with service: %s", good ? "passes":"fails" ));
 
 	  /* here we get the terminal name field */
@@ -546,7 +576,11 @@ check_account(pam_handle_t *pamh, const char *service,
 			  "%s: malformed rule #%d", file, count);
 	       continue;
 	  }
-	  good &= logic_field(pamh, tty, buffer, count, is_same);
+	  intime = logic_field(pamh, tty, buffer, count, is_same);
+	  if (intime == FIELD_IGNORE)
+	       good = FALSE;
+	  else
+	       good &= intime;
 	  D(("with tty: %s", good ? "passes":"fails" ));
 
 	  /* here we get the username field */
@@ -564,8 +598,13 @@ check_account(pam_handle_t *pamh, const char *service,
 #else
 	    pam_syslog (pamh, LOG_ERR, "pam_time does not have netgroup support");
 #endif
-	  else
-	    good &= logic_field(pamh, user, buffer, count, is_same);
+	  else {
+	    intime = logic_field(pamh, user, buffer, count, is_same);
+	    if (intime == FIELD_IGNORE)
+	       good = FALSE;
+	    else
+	       good &= intime;
+	  }
 	  D(("with user: %s", good ? "passes":"fails" ));
 
 	  /* here we get the time field */
@@ -578,6 +617,8 @@ check_account(pam_handle_t *pamh, const char *service,
 	  }
 
 	  intime = logic_field(pamh, &here_and_now, buffer, count, check_time);
+	  if (intime == FIELD_IGNORE)
+	       continue;
 	  D(("with time: %s", intime ? "passes":"fails" ));
 
 	  if (good && !intime) {
@@ -655,7 +696,7 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags UNUSED,
 
     /* good, now we have the service name, the user and the terminal name */
 
-    D(("service=%s", service));
+    D(("service=%s", (const char *) service));
     D(("user=%s", user));
     D(("tty=%s", tty));
 

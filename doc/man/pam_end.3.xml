@@ -1,16 +1,14 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
-                   "http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd">
+<refentry xmlns="http://docbook.org/ns/docbook" version="5.0" xml:id="pam_end">
 
-<refentry id='pam_end'>
-
+  <info><date>%PAM_RELEASE_DATE%</date></info>
   <refmeta>
     <refentrytitle>pam_end</refentrytitle>
     <manvolnum>3</manvolnum>
-    <refmiscinfo class='setdesc'>Linux-PAM Manual</refmiscinfo>
+    <refmiscinfo class="source">Linux-PAM %PAM_VERSION%</refmiscinfo>
+    <refmiscinfo class="manual">Linux-PAM Manual</refmiscinfo>
   </refmeta>
 
-  <refnamediv id="pam_end-name">
+  <refnamediv xml:id="pam_end-name">
     <refname>pam_end</refname>
     <refpurpose>termination of PAM transaction</refpurpose>
   </refnamediv>
@@ -18,7 +16,7 @@
 <!-- body begins here -->
 
   <refsynopsisdiv>
-    <funcsynopsis id="pam_end-synopsis">
+    <funcsynopsis xml:id="pam_end-synopsis">
       <funcsynopsisinfo>#include &lt;security/pam_appl.h&gt;</funcsynopsisinfo>
       <funcprototype>
         <funcdef>int <function>pam_end</function></funcdef>
@@ -29,7 +27,7 @@
   </refsynopsisdiv>
 
 
-  <refsect1 id="pam_end-description">
+  <refsect1 xml:id="pam_end-description">
     <title>DESCRIPTION</title>
     <para>
       The <function>pam_end</function> function terminates the PAM
@@ -79,14 +77,14 @@
     </para>
 
   </refsect1>
-  <refsect1 id="pam_end-return_values">
+  <refsect1 xml:id="pam_end-return_values">
     <title>RETURN VALUES</title>
     <variablelist>
       <varlistentry>
         <term>PAM_SUCCESS</term>
         <listitem>
            <para>
-             Transaction was successful terminated.
+             Transaction was successfully terminated.
           </para>
         </listitem>
       </varlistentry>
@@ -102,7 +100,7 @@
     </variablelist>
   </refsect1>
 
-  <refsect1 id="pam_end-see_also">
+  <refsect1 xml:id="pam_end-see_also">
     <title>SEE ALSO</title>
     <para>
       <citerefentry>

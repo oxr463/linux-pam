@@ -2,7 +2,6 @@
  * pam_unix authentication management
  *
  * Copyright Alexander O. Yuriev, 1996.  All rights reserved.
- * NIS+ support by Thorsten Kukuk <kukuk@weber.uni-paderborn.de>
  * Copyright Jan Rękorajski, 1999.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -86,8 +85,7 @@ do {									\
 static void
 setcred_free (pam_handle_t *pamh UNUSED, void *ptr, int err UNUSED)
 {
-	if (ptr)
-		free (ptr);
+	free (ptr);
 }
 
 int
@@ -119,7 +117,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
 		/*
 		 * Various libraries at various times have had bugs related to
 		 * '+' or '-' as the first character of a user name. Don't
-		 * allow this characters here.
+		 * allow these characters here.
 		 */
 		if (name[0] == '-' || name[0] == '+') {
 			pam_syslog(pamh, LOG_NOTICE, "bad username [%s]", name);

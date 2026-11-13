@@ -57,12 +57,13 @@
 #include <security/pam_ext.h>
 #include <security/pam_modutil.h>
 
-#include "pam_cc_compat.h"
+#include "pam_i18n.h"
+#include "pam_inline.h"
 #include "support.h"
 #include "passverify.h"
 
 int _unix_run_verify_binary(pam_handle_t *pamh, unsigned long long ctrl,
-	const char *user, int *daysleft)
+	const char *user, long *daysleft)
 {
   int retval=0, child, fds[2];
   struct sigaction newsa, oldsa;
@@ -110,14 +111,15 @@ int _unix_run_verify_binary(pam_handle_t *pamh, unsigned long long ctrl,
       _exit(PAM_AUTHINFO_UNAVAIL);
     }
 
-    if (geteuid() == 0) {
-      /* must set the real uid to 0 so the helper will not error
-         out if pam is called from setuid binary (su, sudo...) */
-      if (setuid(0) == -1) {
-          pam_syslog(pamh, LOG_ERR, "setuid failed: %m");
-          printf("-1\n");
-          fflush(stdout);
-          _exit(PAM_AUTHINFO_UNAVAIL);
+    /* must set the real uid to 0 so the helper will not error
+       out if pam is called from setuid binary (su, sudo...) */
+    if (setuid(0) == -1) {
+      uid_t euid = geteuid();
+      pam_syslog(pamh, euid == 0 ? LOG_ERR : LOG_DEBUG, "setuid failed: %m");
+      if (euid == 0) {
+	printf("-1\n");
+	fflush(stdout);
+	_exit(PAM_AUTHINFO_UNAVAIL);
       }
     }
 
@@ -154,7 +156,7 @@ int _unix_run_verify_binary(pam_handle_t *pamh, unsigned long long ctrl,
         rc = pam_modutil_read(fds[0], buf, sizeof(buf) - 1);
 	if(rc > 0) {
 	      buf[rc] = '\0';
-	      if (sscanf(buf,"%d", daysleft) != 1 )
+	      if (sscanf(buf,"%ld", daysleft) != 1)
 	        retval = PAM_AUTH_ERR;
 	    }
 	else {
@@ -189,7 +191,8 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv)
 	unsigned long long ctrl;
 	const void *void_uname;
 	const char *uname;
-	int retval, daysleft = -1;
+	long daysleft = -1;
+	int retval;
 	char buf[256];
 
 	D(("called."));
@@ -257,28 +260,28 @@ pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv)
 		 * as it is relevant only for password change.
 		 */
 		retval = PAM_SUCCESS;
-		/* fallthrough */
+		PAM_FALLTHROUGH;
 	case PAM_SUCCESS:
 		if (daysleft >= 0) {
 			pam_syslog(pamh, LOG_DEBUG,
-				"password for user %s will expire in %d days",
+				"password for user %s will expire in %ld days",
 				uname, daysleft);
 #if defined HAVE_DNGETTEXT && defined ENABLE_NLS
-			snprintf (buf, sizeof (buf),
+			pam_sprintf(buf,
 				dngettext(PACKAGE,
-				  "Warning: your password will expire in %d day.",
-				  "Warning: your password will expire in %d days.",
+				  "Warning: your password will expire in %ld day.",
+				  "Warning: your password will expire in %ld days.",
 				  daysleft),
 				daysleft);
 #else
 			if (daysleft == 1)
-			    snprintf(buf, sizeof (buf),
-				_("Warning: your password will expire in %d day."),
+			    pam_sprintf(buf,
+				_("Warning: your password will expire in %ld day."),
 				daysleft);
 			else
-			    snprintf(buf, sizeof (buf),
+			    pam_sprintf(buf,
 			    /* TRANSLATORS: only used if dngettext is not supported */
-				_("Warning: your password will expire in %d days."),
+				_("Warning: your password will expire in %ld days."),
 				daysleft);
 #endif
 			_make_remark(pamh, ctrl, PAM_TEXT_INFO, buf);

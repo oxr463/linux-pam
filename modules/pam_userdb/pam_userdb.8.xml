@@ -1,54 +1,52 @@
-<?xml version="1.0" encoding='UTF-8'?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.3//EN"
-	"http://www.oasis-open.org/docbook/xml/4.3/docbookx.dtd">
+<refentry xmlns="http://docbook.org/ns/docbook" version="5.0" xml:id="pam_userdb">
 
-<refentry id="pam_userdb">
-
+  <info><date>%PAM_RELEASE_DATE%</date></info>
   <refmeta>
     <refentrytitle>pam_userdb</refentrytitle>
     <manvolnum>8</manvolnum>
-    <refmiscinfo class="sectdesc">Linux-PAM Manual</refmiscinfo>
+    <refmiscinfo class="source">Linux-PAM %PAM_VERSION%</refmiscinfo>
+    <refmiscinfo class="manual">Linux-PAM Manual</refmiscinfo>
   </refmeta>
 
-  <refnamediv id="pam_userdb-name">
+  <refnamediv xml:id="pam_userdb-name">
     <refname>pam_userdb</refname>
     <refpurpose>PAM module to authenticate against a db database</refpurpose>
   </refnamediv>
 
   <refsynopsisdiv>
-    <cmdsynopsis id="pam_userdb-cmdsynopsis">
+    <cmdsynopsis xml:id="pam_userdb-cmdsynopsis" sepchar=" ">
       <command>pam_userdb.so</command>
-      <arg choice="plain">
+      <arg choice="plain" rep="norepeat">
 	db=<replaceable>/path/database</replaceable>
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
 	debug
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         crypt=[crypt|none]
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         icase
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         dump
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         try_first_pass
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         use_first_pass
       </arg>
-      <arg choice="opt">
+      <arg choice="opt" rep="norepeat">
         unknown_ok
       </arg>
-      <arg choice="opt">
-        key_only
+      <arg choice="opt" rep="norepeat">
+        key_only[=<replaceable>separator</replaceable>]
       </arg>
     </cmdsynopsis>
   </refsynopsisdiv>
 
-  <refsect1 id="pam_userdb-description">
+  <refsect1 xml:id="pam_userdb-description">
 
     <title>DESCRIPTION</title>
 
@@ -60,13 +58,13 @@
     </para>
   </refsect1>
 
-  <refsect1 id="pam_userdb-options">
+  <refsect1 xml:id="pam_userdb-options">
 
     <title>OPTIONS</title>
     <variablelist>
       <varlistentry>
         <term>
-          <option>crypt=[crypt|none]</option>
+          crypt=[crypt|none]
         </term>
         <listitem>
           <para>
@@ -82,13 +80,13 @@
       </varlistentry>
       <varlistentry>
         <term>
-          <option>db=<replaceable>/path/database</replaceable></option>
+          db=/path/database
         </term>
         <listitem>
           <para>
             Use the <filename>/path/database</filename> database for
             performing lookup. There is no default; the module will
-            return <emphasis remap='B'>PAM_IGNORE</emphasis> if no
+            return <emphasis remap="B">PAM_IGNORE</emphasis> if no
             database is provided. Note that the path to the database file
             should be specified without the <filename>.db</filename> suffix.
           </para>
@@ -96,7 +94,7 @@
       </varlistentry>
        <varlistentry>
         <term>
-          <option>debug</option>
+          debug
         </term>
         <listitem>
           <para>
@@ -107,7 +105,7 @@
       </varlistentry>
       <varlistentry>
         <term>
-          <option>dump</option>
+          dump
         </term>
         <listitem>
           <para>
@@ -118,7 +116,7 @@
       </varlistentry>
       <varlistentry>
         <term>
-          <option>icase</option>
+          icase
         </term>
         <listitem>
           <para>
@@ -131,7 +129,7 @@
 
       <varlistentry>
         <term>
-          <option>try_first_pass</option>
+          try_first_pass
         </term>
         <listitem>
           <para>
@@ -146,7 +144,7 @@
       </varlistentry>
       <varlistentry>
         <term>
-          <option>use_first_pass</option>
+          use_first_pass
         </term>
         <listitem>
           <para>
@@ -161,7 +159,7 @@
       </varlistentry>
       <varlistentry>
         <term>
-          <option>unknown_ok</option>
+          unknown_ok
         </term>
         <listitem>
           <para>
@@ -174,24 +172,45 @@
       </varlistentry>
       <varlistentry>
         <term>
-          <option>key_only</option>
+          key_only[=<replaceable>separator</replaceable>]
         </term>
         <listitem>
           <para>
             The username and password are concatenated together
-            in the database hash as 'username-password' with a
-            random value.  if the concatenation of the username and
-            password with a dash in the middle returns any result,
-            the user is valid.  this is useful in cases where
+            in the database hash as
+            'username<replaceable>separator</replaceable>password' with a
+            random value.  If the concatenation of the username and
+            password with the separator in the middle returns any result,
+            the user is valid.  This is useful in cases where
             the username may not be unique but the username and
             password pair are.
+          </para>
+          <para>
+            When no <replaceable>separator</replaceable> is given,
+            <option>-</option> (dash) is used for backward
+            compatibility.  When a single-byte
+            <replaceable>separator</replaceable> is specified
+            explicitly (e.g. <option>key_only=:</option>), the module
+            rejects any username that contains the separator byte.
+            This prevents ambiguous keys only if the database contains
+            no keys created for usernames containing that separator:
+            the module cannot distinguish such an existing key from
+            one created for a shorter username and a different password.
+            Before enabling the explicit form, remove any keys created
+            for usernames containing the chosen separator, or choose a
+            different separator and rebuild the database.  When changing
+            the separator, rebuild all keys with the new separator.  Using
+            <option>key_only=:</option> is recommended because
+            <option>:</option> is already excluded from POSIX
+            usernames.  Using <option>key_only=-</option> applies
+            the same guard with the traditional dash separator.
           </para>
         </listitem>
       </varlistentry>
     </variablelist>
   </refsect1>
 
-  <refsect1 id="pam_userdb-types">
+  <refsect1 xml:id="pam_userdb-types">
     <title>MODULE TYPES PROVIDED</title>
     <para>
       The <option>auth</option> and <option>account</option> module
@@ -199,7 +218,7 @@
     </para>
   </refsect1>
 
-  <refsect1 id='pam_userdb-return_values'>
+  <refsect1 xml:id="pam_userdb-return_values">
     <title>RETURN VALUES</title>
     <variablelist>
       <varlistentry>
@@ -259,14 +278,14 @@
     </variablelist>
   </refsect1>
 
-  <refsect1 id='pam_userdb-examples'>
+  <refsect1 xml:id="pam_userdb-examples">
     <title>EXAMPLES</title>
     <programlisting>
 auth  sufficient pam_userdb.so icase db=/etc/dbtest
     </programlisting>
   </refsect1>
 
-  <refsect1 id='pam_userdb-see_also'>
+  <refsect1 xml:id="pam_userdb-see_also">
     <title>SEE ALSO</title>
     <para>
       <citerefentry>
@@ -284,7 +303,7 @@ auth  sufficient pam_userdb.so icase db=/etc/dbtest
     </para>
   </refsect1>
 
-  <refsect1 id='pam_userdb-author'>
+  <refsect1 xml:id="pam_userdb-author">
     <title>AUTHOR</title>
       <para>
         pam_userdb was written by Cristian Gafton &gt;gafton@redhat.com&lt;.

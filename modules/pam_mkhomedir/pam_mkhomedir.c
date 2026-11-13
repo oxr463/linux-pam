@@ -51,6 +51,7 @@
 
 #include "pam_cc_compat.h"
 #include "pam_inline.h"
+#include "pam_i18n.h"
 
 /* argument parsing */
 #define MKHOMEDIR_DEBUG      020	/* be verbose about things */
@@ -58,6 +59,11 @@
 
 #define LOGIN_DEFS           "/etc/login.defs"
 #define UMASK_DEFAULT        "0022"
+
+#define SKELDIR "/etc/skel"
+#ifdef VENDORDIR
+#define VENDOR_SKELDIR (VENDORDIR "/skel")
+#endif
 
 struct options_t {
   int ctrl;
@@ -72,7 +78,7 @@ _pam_parse (const pam_handle_t *pamh, int flags, int argc, const char **argv,
 {
    opt->ctrl = 0;
    opt->umask = NULL;
-   opt->skeldir = "/etc/skel";
+   opt->skeldir = NULL;
 
    /* does the application require quiet? */
    if ((flags & PAM_SILENT) == PAM_SILENT)
@@ -100,12 +106,8 @@ _pam_parse (const pam_handle_t *pamh, int flags, int argc, const char **argv,
 static char*
 _pam_conv_str_umask_to_homemode(const char *umask)
 {
-   unsigned int m = 0;
-   char tmp[5];
-
-   m = 0777 & ~strtoul(umask, NULL, 8);
-   (void) snprintf(tmp, sizeof(tmp), "0%o", m);
-   return strdup(tmp);
+   unsigned int m = 0777 & ~strtoul(umask, NULL, 8);
+   return pam_asprintf("%#o", m);
 }
 
 /* Do the actual work of creating a home dir */
@@ -124,15 +126,6 @@ create_homedir (pam_handle_t *pamh, options_t *opt,
 
 
    D(("called."));
-
-   /*
-    * This code arranges that the demise of the child does not cause
-    * the application to receive a signal it is not expecting - which
-    * may kill the application or worse.
-    */
-   memset(&newsa, '\0', sizeof(newsa));
-   newsa.sa_handler = SIG_DFL;
-   sigaction(SIGCHLD, &newsa, &oldsa);
 
    if (opt->ctrl & MKHOMEDIR_DEBUG) {
         pam_syslog(pamh, LOG_DEBUG, "Executing mkhomedir_helper.");
@@ -153,11 +146,20 @@ create_homedir (pam_handle_t *pamh, options_t *opt,
       login_homemode = _pam_conv_str_umask_to_homemode(opt->umask);
    }
 
+   /*
+    * This code arranges that the demise of the child does not cause
+    * the application to receive a signal it is not expecting - which
+    * may kill the application or worse.
+    */
+   memset(&newsa, '\0', sizeof(newsa));
+   newsa.sa_handler = SIG_DFL;
+   sigaction(SIGCHLD, &newsa, &oldsa);
+
    /* fork */
    child = fork();
    if (child == 0) {
 	static char *envp[] = { NULL };
-	const char *args[] = { NULL, NULL, NULL, NULL, NULL, NULL };
+	const char *args[] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 
 	if (pam_modutil_sanitize_helper_fds(pamh, PAM_MODUTIL_PIPE_FD,
 					    PAM_MODUTIL_PIPE_FD,
@@ -168,8 +170,11 @@ create_homedir (pam_handle_t *pamh, options_t *opt,
 	args[0] = MKHOMEDIR_HELPER;
 	args[1] = user;
 	args[2] = opt->umask ? opt->umask : UMASK_DEFAULT;
-	args[3] = opt->skeldir;
+	args[3] = opt->skeldir ? opt->skeldir : SKELDIR;
 	args[4] = login_homemode;
+#ifdef VENDORDIR
+	args[5] = opt->skeldir ? NULL : VENDOR_SKELDIR;
+#endif
 
 	DIAG_PUSH_IGNORE_CAST_QUAL;
 	execve(MKHOMEDIR_HELPER, (char **)args, envp);
@@ -242,7 +247,7 @@ pam_sm_open_session (pam_handle_t *pamh, int flags, int argc,
    if (pwd == NULL)
    {
       pam_syslog(pamh, LOG_NOTICE, "User unknown.");
-      D(("couldn't identify user %s", user));
+      D(("couldn't identify user %s", (const char *) user));
       return PAM_USER_UNKNOWN;
    }
 

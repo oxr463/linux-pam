@@ -17,6 +17,7 @@ extern "C" {
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <sys/types.h>
 
 /* opaque agent handling structure */
@@ -24,7 +25,8 @@ extern "C" {
 typedef struct pamc_handle_s *pamc_handle_t;
 
 /* binary prompt structure pointer */
-typedef struct { uint32_t length; uint8_t control; } *pamc_bp_t;
+typedef struct { uint32_t length; uint8_t control; }
+	__attribute__ ((__packed__)) *pamc_bp_t;
 
 /*
  * functions provided by libpamc
@@ -70,10 +72,6 @@ char **pamc_list_agents(pamc_handle_t pch);
  * PAM_BP_ MACROS for creating, destroying and manipulating binary prompts
  */
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-
 #ifndef PAM_BP_ASSERT
 # ifdef NDEBUG
 #  define PAM_BP_ASSERT(x)   do {} while (0)
@@ -98,10 +96,10 @@ char **pamc_list_agents(pamc_handle_t pch);
 #define PAM_BP_MAX_LENGTH     0x20000                   /* an advisory limit */
 #define PAM_BP_WCONTROL(x)    (__PAM_BP_WOCTET(x,4))
 #define PAM_BP_RCONTROL(x)    (__PAM_BP_ROCTET(x,4))
-#define PAM_BP_SIZE(x)        ((__PAM_BP_ROCTET(x,0)<<24)+      \
-			       (__PAM_BP_ROCTET(x,1)<<16)+      \
-			       (__PAM_BP_ROCTET(x,2)<< 8)+      \
-			       (__PAM_BP_ROCTET(x,3)    ))
+#define PAM_BP_SIZE(x)        (((uint32_t)__PAM_BP_ROCTET(x,0)<<24)|      \
+			       ((uint32_t)__PAM_BP_ROCTET(x,1)<<16)|      \
+			       ((uint32_t)__PAM_BP_ROCTET(x,2)<< 8)|      \
+			       ((uint32_t)__PAM_BP_ROCTET(x,3)    ))
 #define PAM_BP_LENGTH(x)      (PAM_BP_SIZE(x) - PAM_BP_MIN_SIZE)
 #define PAM_BP_WDATA(x)       (PAM_BP_MIN_SIZE + (uint8_t *) (x))
 #define PAM_BP_RDATA(x)       (PAM_BP_MIN_SIZE + (const uint8_t *) (x))
@@ -120,7 +118,7 @@ do {                                                                       \
 	if (cntrl) {                                                       \
 	    uint32_t __size;                                              \
                                                                            \
-	    __size = PAM_BP_MIN_SIZE + data_length;                        \
+	    __size = PAM_BP_MIN_SIZE + (data_length);                      \
 	    if ((*(old_p) = PAM_BP_CALLOC(1, 1+__size))) {                 \
 		__PAM_BP_WOCTET(*(old_p), 3) =  __size      & 0xFF;        \
 		__PAM_BP_WOCTET(*(old_p), 2) = (__size>>=8) & 0xFF;        \
@@ -131,7 +129,7 @@ do {                                                                       \
 		PAM_BP_ASSERT("out of memory for binary prompt");          \
 	    }                                                              \
 	} else {                                                           \
-	    *old_p = NULL;                                                 \
+	    *(old_p) = NULL;                                               \
 	}                                                                  \
     } else {                                                               \
 	PAM_BP_ASSERT("programming error, invalid binary prompt pointer"); \
@@ -140,13 +138,13 @@ do {                                                                       \
 
 #define PAM_BP_FILL(prmpt, offset, length, data)                           \
 do {                                                                       \
-    size_t bp_length;                                                      \
-    uint8_t *prompt = (uint8_t *) (prmpt);                               \
-    bp_length = PAM_BP_LENGTH(prompt);                                     \
-    if (bp_length < ((length)+(offset))) {                                 \
+    size_t __bp_length;                                                    \
+    uint8_t *__prompt = (uint8_t *) (prmpt);                             \
+    __bp_length = PAM_BP_LENGTH(__prompt);                                 \
+    if (__bp_length < ((length)+(offset))) {                               \
 	PAM_BP_ASSERT("attempt to write over end of prompt");              \
     }                                                                      \
-    memcpy((offset) + PAM_BP_WDATA(prompt), (data), (length));             \
+    memcpy((offset) + PAM_BP_WDATA(__prompt), (data), (length));           \
 } while (0)
 
 #define PAM_BP_EXTRACT(prmpt, offset, length, data)                        \

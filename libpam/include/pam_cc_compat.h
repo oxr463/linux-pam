@@ -21,6 +21,18 @@
 # define PAM_ATTRIBUTE_ALIGNED(arg)	/* empty */
 #endif
 
+#if PAM_GNUC_PREREQ(3, 0)
+# define PAM_ATTRIBUTE_MALLOC		__attribute__((__malloc__))
+#else
+# define PAM_ATTRIBUTE_MALLOC		/* empty */
+#endif
+
+#if PAM_GNUC_PREREQ(7, 0) || PAM_CLANG_PREREQ(4, 0)
+# define PAM_FALLTHROUGH		__attribute__((__fallthrough__))
+#else
+# define PAM_FALLTHROUGH		((void) 0)
+#endif
+
 #if PAM_GNUC_PREREQ(4, 6)
 # define DIAG_PUSH_IGNORE_CAST_QUAL					\
 	_Pragma("GCC diagnostic push");					\
@@ -31,6 +43,11 @@
 	_Pragma("GCC diagnostic push");					\
 	_Pragma("GCC diagnostic ignored \"-Wcast-align\"")
 # define DIAG_POP_IGNORE_CAST_ALIGN					\
+	_Pragma("GCC diagnostic pop")
+# define DIAG_PUSH_IGNORE_FORMAT_NONLITERAL				\
+	_Pragma("GCC diagnostic push");					\
+	_Pragma("GCC diagnostic ignored \"-Wformat-nonliteral\"")
+# define DIAG_POP_IGNORE_FORMAT_NONLITERAL				\
 	_Pragma("GCC diagnostic pop")
 #elif PAM_CLANG_PREREQ(2, 6)
 # define DIAG_PUSH_IGNORE_CAST_QUAL					\
@@ -43,11 +60,18 @@
 	_Pragma("clang diagnostic ignored \"-Wcast-align\"")
 # define DIAG_POP_IGNORE_CAST_ALIGN					\
 	_Pragma("clang diagnostic pop")
+# define DIAG_PUSH_IGNORE_FORMAT_NONLITERAL				\
+	_Pragma("clang diagnostic push");				\
+	_Pragma("clang diagnostic ignored \"-Wformat-nonliteral\"")
+# define DIAG_POP_IGNORE_FORMAT_NONLITERAL				\
+	_Pragma("clang diagnostic pop")
 #else
-# define DIAG_PUSH_IGNORE_CAST_QUAL	/* empty */
-# define DIAG_POP_IGNORE_CAST_QUAL	/* empty */
-# define DIAG_PUSH_IGNORE_CAST_ALIGN	/* empty */
-# define DIAG_POP_IGNORE_CAST_ALIGN	/* empty */
+# define DIAG_PUSH_IGNORE_CAST_QUAL		/* empty */
+# define DIAG_POP_IGNORE_CAST_QUAL		/* empty */
+# define DIAG_PUSH_IGNORE_CAST_ALIGN		/* empty */
+# define DIAG_POP_IGNORE_CAST_ALIGN		/* empty */
+# define DIAG_PUSH_IGNORE_FORMAT_NONLITERAL	/* empty */
+# define DIAG_POP_IGNORE_FORMAT_NONLITERAL	/* empty */
 #endif
 
 /*

@@ -1,16 +1,14 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
-                   "http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd">
+<refentry xmlns="http://docbook.org/ns/docbook" version="5.0" xml:id="pam_error">
 
-<refentry id="pam_error">
-
+  <info><date>%PAM_RELEASE_DATE%</date></info>
   <refmeta>
     <refentrytitle>pam_error</refentrytitle>
     <manvolnum>3</manvolnum>
-    <refmiscinfo class='setdesc'>Linux-PAM Manual</refmiscinfo>
+    <refmiscinfo class="source">Linux-PAM %PAM_VERSION%</refmiscinfo>
+    <refmiscinfo class="manual">Linux-PAM Manual</refmiscinfo>
   </refmeta>
 
-  <refnamediv id="pam_error-name">
+  <refnamediv xml:id="pam_error-name">
     <refname>pam_error</refname>
     <refname>pam_verror</refname>
     <refpurpose>display error messages to the user</refpurpose>
@@ -18,7 +16,7 @@
 
 <!-- body begins here -->
 
-  <refsynopsisdiv id="pam_error-synopsis">
+  <refsynopsisdiv xml:id="pam_error-synopsis">
     <funcsynopsis>
       <funcsynopsisinfo>#include &lt;security/pam_ext.h&gt;</funcsynopsisinfo>
       <funcprototype>
@@ -36,7 +34,7 @@
     </funcsynopsis>
   </refsynopsisdiv>
 
-  <refsect1 id='pam_error-description'>
+  <refsect1 xml:id="pam_error-description">
     <title>DESCRIPTION</title>
     <para>
       The <function>pam_error</function> function prints error messages
@@ -51,7 +49,7 @@
       </citerefentry> variable argument list macros.
     </para>
   </refsect1>
-  <refsect1 id="pam_error-return_values">
+  <refsect1 xml:id="pam_error-return_values">
     <title>RETURN VALUES</title>
     <variablelist>
       <varlistentry>
@@ -89,7 +87,7 @@
     </variablelist>
   </refsect1>
 
-  <refsect1 id='pam_error-see_also'>
+  <refsect1 xml:id="pam_error-see_also">
     <title>SEE ALSO</title>
     <para>
       <citerefentry>
@@ -110,7 +108,7 @@
     </para>
   </refsect1>
 
-  <refsect1 id='pam_error-standards'>
+  <refsect1 xml:id="pam_error-standards">
     <title>STANDARDS</title>
     <para>
       The <function>pam_error</function> and <function>pam_verror</function>
